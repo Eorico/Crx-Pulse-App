@@ -1,0 +1,35 @@
+name: crx_pulse
+description: CRX-Pulse crayfish aquaculture monitoring - Flutter port
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider:
+  http:
+  lucide_icons_flutter:
+  cupertino_icons:
+  sqflite:
+  path:
+  firebase_core:
+  firebase_auth:
+  cloud_firestore:
+  connectivity_plus:
+  fl_chart:
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints:
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/images/sensors/
+    - assets/images/status/
+    - assets/images/mascot/

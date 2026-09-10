@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "234538687436",
+    "project_id": "crx-pulse-1d07f",
+    "storage_bucket": "crx-pulse-1d07f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:234538687436:android:609c4f5a20912089671b69",
+        "android_client_info": {
+          "package_name": "com.example.frontend"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhxs2SoEwzmvQLrFTA4m_kyJeuExZC0fI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
