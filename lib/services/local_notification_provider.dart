@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../core/firmware_spec.dart';
 import 'local_db.dart';
 import 'local_esp32_service.dart';
 
@@ -45,6 +46,18 @@ class LocalNotificationProvider extends ChangeNotifier {
     await fetchNotifications();
   }
 
+  /// Removes a single notification by ID - used by the swipe-to-
+  /// delete gesture. Updates the in-memory list immediately (rather
+  /// than waiting on a full fetchNotifications() round-trip) so the
+  /// Dismissible's own removal animation isn't fighting a list that
+  /// hasn't caught up yet.
+  Future<void> deleteNotification(int id) async {
+    final db = await LocalDb.instance.database;
+    await db.delete('notifications', where: 'id = ?', whereArgs: [id]);
+    notifications = notifications.where((n) => n.id != id).toList();
+    notifyListeners();
+  }
+
   Future<void> _log(String message, String severity) async {
     final db = await LocalDb.instance.database;
     await db.insert('notifications', {
@@ -59,11 +72,25 @@ class LocalNotificationProvider extends ChangeNotifier {
   /// transition from safe -> unsafe (tracked via _currentlyUnsafe),
   /// clearing the flag again once it's back in range so a future
   /// breach logs a fresh alert instead of staying silent forever.
+  ///
+  /// Every range comes from [FirmwareSpec], so an alert fires at
+  /// exactly the point the sensor cards turn red and (for turbidity and
+  /// housing temperature) at exactly the point the firmware itself
+  /// changes behaviour. These used to be loose literals here — 50%
+  /// turbidity instead of the firmware's "Turbid" band edge, and no
+  /// housing-temperature check at all even though overheating is what
+  /// the cooling fan exists for.
   Future<void> checkThresholds(LocalEsp32Service esp32) async {
-    await _check('ph', esp32.ph, (v) => v >= 6.5 && v <= 8.5, 'pH is out of the safe range');
-    await _check('ammonia', esp32.ammonia, (v) => v < 0.5, 'Ammonia level is too high');
-    await _check('turbidity', esp32.turbidity, (v) => v < 50, 'Water turbidity is too high');
-    await _check('water_temp', esp32.waterTempC, (v) => v >= 20 && v <= 30, 'Water temperature is out of range');
+    await _check('ph', esp32.ph, FirmwareSpec.phIsSafe,
+        'pH is out of the safe range');
+    await _check('ammonia', esp32.ammonia, FirmwareSpec.ammoniaIsSafe,
+        'Ammonia level is too high');
+    await _check('turbidity', esp32.turbidity, FirmwareSpec.turbidityIsSafe,
+        'Water turbidity is too high');
+    await _check('water_temp', esp32.waterTempC, FirmwareSpec.waterTempIsSafe,
+        'Water temperature is out of range');
+    await _check('housing_temp', esp32.ambientTempC, FirmwareSpec.housingTempIsSafe,
+        'Housing temperature is high — cooling fan at full speed');
   }
 
   Future<void> _check(String key, double? value, bool Function(double) isSafe, String message) async {

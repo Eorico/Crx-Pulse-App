@@ -3,7 +3,9 @@ import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../core/theme.dart';
 import '../core/fan_speed_util.dart';
+import '../core/firmware_spec.dart';
 import '../services/floating_widget_position_provider.dart';
+import 'motion.dart';
 
 const double _widgetSize = 48;
 const double _expandedWidth = 176;
@@ -116,13 +118,19 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
     positionProvider.initializeIfNeeded(screenSize, _widgetSize);
 
     final fanSpeed = widget.isLive ? _currentFanPercent(widget) : 0;
-    final isHot = widget.isLive && widget.ambientTempC != null && widget.ambientTempC! >= 34.0;
+    // "Hot" is the firmware's own ceiling (COOLING_MAX): the point
+    // where the fan is already at 100% and has nothing left to give.
+    // This was an unexplained 34 °C before.
+    final isHot = widget.isLive &&
+        widget.ambientTempC != null &&
+        widget.ambientTempC! >= FirmwareSpec.housingHotC;
     final fanColor = !widget.isLive ? const Color(0xFF9CA3AF) : (isHot ? const Color(0xFFEF4444) : AppColors.primary);
 
     return Positioned(
       left: positionProvider.position.dx,
       top: positionProvider.position.dy,
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
           _dragStartPosition = details.globalPosition;
           _wasDragged = false;
@@ -149,7 +157,9 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
               child: Transform.scale(scale: scale, child: child),
             );
           },
-          child: Container(
+          child: AnimatedContainer(
+            duration: AppMotion.normal,
+            curve: AppMotion.smooth,
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(20),
@@ -158,7 +168,16 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
                 BoxShadow(color: Colors.black.withValues(alpha: 0.15), offset: const Offset(0, 4), blurRadius: 10),
               ],
             ),
-            child: _expanded ? _buildExpanded(fanColor, isHot, fanSpeed) : _buildCollapsed(fanColor),
+            // The panel grows and shrinks rather than snapping between
+            // the 48px puck and the full readout.
+            child: AnimatedSize(
+              duration: AppMotion.normal,
+              curve: AppMotion.smooth,
+              alignment: Alignment.topLeft,
+              child: _expanded
+                  ? _buildExpanded(fanColor, isHot, fanSpeed)
+                  : _buildCollapsed(fanColor),
+            ),
           ),
         ),
       ),
@@ -208,10 +227,16 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
                     const Text('Fan Speed', style: TextStyle(color: AppColors.textMuted, fontSize: 11)),
                     if (_isUsingRealFanState) ...[
                       const SizedBox(width: 4),
-                      Icon(LucideIcons.checkCircle2, size: 10, color: AppColors.success),
+                      const Icon(LucideIcons.checkCircle2, size: 10, color: AppColors.success),
                     ],
                   ]),
-                  Text('$fanSpeed%', style: const TextStyle(color: AppColors.textPrimary, fontSize: 12, fontWeight: FontWeight.bold)),
+                  AnimatedNumber(
+                    value: fanSpeed.toDouble(),
+                    decimals: 0,
+                    suffix: '%',
+                    duration: AppMotion.normal,
+                    style: const TextStyle(color: AppColors.textPrimary, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
@@ -220,10 +245,20 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
                 child: Container(
                   height: 6,
                   color: Colors.grey.shade100,
-                  child: FractionallySizedBox(
-                    alignment: Alignment.centerLeft,
-                    widthFactor: fanSpeed / 100,
-                    child: Container(color: isHot ? const Color(0xFFEF4444) : AppColors.primary),
+                  // The bar slides to each new duty cycle, so a ramping
+                  // fan reads as a ramp rather than a series of jumps.
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween(begin: fanSpeed / 100, end: fanSpeed / 100),
+                    duration: AppMotion.slow,
+                    curve: AppMotion.smooth,
+                    builder: (context, factor, _) => FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: factor.clamp(0.0, 1.0),
+                      child: AnimatedContainer(
+                        duration: AppMotion.normal,
+                        color: isHot ? const Color(0xFFEF4444) : AppColors.primary,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -246,25 +281,40 @@ class _ThermalFanWidgetState extends State<ThermalFanWidget> with TickerProvider
           const SizedBox(width: 6),
           Text(label, style: const TextStyle(color: AppColors.textMuted, fontSize: 11)),
         ]),
-        Text(
-          value != null ? '${value.toStringAsFixed(1)}°C' : '—',
-          style: TextStyle(
-            color: highlightRed ? const Color(0xFFEF4444) : AppColors.textPrimary,
-            fontSize: 12, fontWeight: FontWeight.w600,
-          ),
-        ),
+        // Counts to each new temperature instead of snapping.
+        value != null
+            ? AnimatedNumber(
+                value: value,
+                decimals: 1,
+                suffix: '°C',
+                style: TextStyle(
+                  color: highlightRed ? const Color(0xFFEF4444) : AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              )
+            : Text(
+                '—',
+                style: TextStyle(
+                  color: highlightRed ? const Color(0xFFEF4444) : AppColors.textPrimary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
       ],
     );
   }
 
   Widget _spinningFan(Color color, double size) {
-    if (_spinController == null) {
-      return Icon(LucideIcons.fan, color: color, size: size);
-    }
+    // The floating fan now uses the new fan image asset instead of a
+    // Lucide glyph (color kept in the signature for call-site
+    // compatibility; the PNG carries its own coloring).
+    final img = Image.asset('assets/images/sensors/fan.png', width: size, height: size);
+    if (_spinController == null) return img;
     return RotationTransition(
       // Counter-clockwise, matching the original's -360deg outputRange exactly.
       turns: Tween(begin: 0.0, end: -1.0).animate(_spinController!),
-      child: Icon(LucideIcons.fan, color: color, size: size),
+      child: img,
     );
   }
 

@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
+import '../core/theme.dart';
+import '../core/sensor_icons.dart';
 import '../services/local_esp32_service.dart';
+import 'motion.dart';
 
-/// Shows the actual provided ESP32 chip artwork - green-glow version
-/// when connected, red-glow "not connected" version otherwise. Used
-/// identically on both Home and Device Setup, so a fix here covers
-/// both automatically.
+/// Shows the ESP32 chip artwork — green-glow version when connected,
+/// red-glow "not connected" version otherwise. Used identically on both
+/// Home and Device Setup, so a fix here covers both.
+///
+/// A connected chip carries a slow green halo, which is the app's one
+/// ambient "data is arriving" signal; a disconnected one sits still
+/// under a red halo. The two images cross-fade rather than cutting.
 class ConnectionCpuIndicator extends StatelessWidget {
   final Esp32ConnectionState state;
   final double size;
@@ -13,11 +19,16 @@ class ConnectionCpuIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = state == Esp32ConnectionState.connected;
-    final asset = connected ? 'assets/images/status/cpu_connected.png' : 'assets/images/status/cpu_not_connected.png';
+    final asset = connected ? StatusIcons.connected : StatusIcons.notConnected;
 
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 300),
-      child: Image.asset(asset, key: ValueKey(connected), width: size, height: size),
+    return PulseHalo(
+      color: connected ? AppColors.success : AppColors.danger,
+      active: connected,
+      maxRadius: size * 0.35,
+      child: SwapIn(
+        swapKey: connected,
+        child: Image.asset(asset, width: size, height: size),
+      ),
     );
   }
 }

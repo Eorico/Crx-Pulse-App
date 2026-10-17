@@ -1,0 +1,236 @@
+/// CRX-Pulse — the app's mirror of the firmware's constants.
+///
+/// Every number here is copied from `hardware/crx_pulse_dev/crx_pulse/
+/// crx_pulse.ino` (which in turn carries the bench sketch's calibration
+/// verbatim). The app used to hard-code its own, drifted copies in half
+/// a dozen files — a fan curve that started at 28 °C when the firmware
+/// starts at 25 °C, turbidity "NTU" when the device sends a percentage,
+/// ammonia "ppm" when the device sends mg/L. One file now holds them,
+/// so firmware and app can only disagree in one place.
+///
+/// If you change a constant in the .ino, change it here too. The names
+/// below deliberately match the firmware's.
+library;
+
+/// One selectable speed for the DC rotator, carrying both the percent
+/// the user sees and the raw PWM the firmware's setMotor1() wants.
+class RotatorSpeed {
+  final String label;
+  final int percent;
+  final int pwm;
+  const RotatorSpeed(this.label, this.percent, this.pwm);
+}
+
+/// Command `type` values the firmware's pollCommands() understands.
+/// Strings, because that is what the `commands.type` column holds.
+class DeviceCommand {
+  DeviceCommand._();
+
+  /// Dispense feed: `grams` + `rotator_pwm`.
+  static const feedNow = 'feed_now';
+
+  /// Test: drive the feeder servo. The firmware auto-closes after
+  /// [FirmwareSpec.servoTestAutoClose].
+  static const servoOpen = 'servo_open';
+  static const servoClose = 'servo_close';
+
+  /// Test: run the DC rotator at `value` PWM (0 stops it). The firmware
+  /// auto-stops after [FirmwareSpec.motorTestTimeout].
+  static const motorTest = 'motor_test';
+
+  /// Ask the device to mirror its full serial output for `value`
+  /// seconds.
+  static const logStream = 'log_stream';
+}
+
+class FirmwareSpec {
+  FirmwareSpec._();
+
+  // ───────────────────────── cloud cadence ─────────────────────────
+  // CLOUD_READING_INTERVAL in the firmware.
+  static const Duration readingInterval = Duration(seconds: 10);
+
+  /// A reading counts as live for three pushes' worth of time — one
+  /// dropped insert (or a slow one) must not read as a disconnection.
+  static const Duration freshWindow = Duration(seconds: 30);
+
+  // ───────────────────────── cooling fan ─────────────────────────
+  // COOLING_START / COOLING_MAX / COOLING_MIN_PWM / COOLING_MAX_PWM.
+  //
+  //   below 25 °C : off
+  //   25 → 40 °C  : ramps 191 → 255
+  //   above 40 °C : 255
+  //
+  // 191 is the lowest duty this fan reliably starts at under load,
+  // which is why the ramp begins there instead of at 0.
+  static const double coolingStartC = 25.0;
+  static const double coolingMaxC = 40.0;
+  static const int coolingMinPwm = 191;
+  static const int coolingMaxPwm = 255;
+
+  /// Housing temperature at which the app flags "hot": the point where
+  /// the firmware has nothing left to give — the fan is already pegged
+  /// at 100%. (The app previously used an unexplained 34 °C.)
+  static const double housingHotC = coolingMaxC;
+
+  // ───────────────────────── turbidity ─────────────────────────
+  // V_CLEAR / V_HIGH and the three status thresholds. Note the
+  // inversion: a MORE turbid sample reads a LOWER voltage.
+  static const double turbidityVClear = 1.3646; // 0 %
+  static const double turbidityVHigh = 1.1916; // 100 %
+  static const double turbidityT1 = 1.33015; // Clear -> Slightly Turbid
+  static const double turbidityT2 = 1.28065; // Slightly Turbid -> Turbid
+  static const double turbidityT3 = 1.22865; // Turbid -> Highly Turbid
+
+  /// The firmware's own formula, so the band edges below are derived
+  /// from the calibration rather than typed in by hand.
+  static double turbidityPercentOf(double volts) {
+    final pct =
+        ((turbidityVClear - volts) / (turbidityVClear - turbidityVHigh)) * 100.0;
+    return pct.clamp(0.0, 100.0);
+  }
+
+  /// Band edges as PERCENT — which is what `readings.turbidity` holds.
+  /// Works out to 19.9 / 48.5 / 78.6 %.
+  static final double turbidityClearMax = turbidityPercentOf(turbidityT1);
+  static final double turbiditySlightlyMax = turbidityPercentOf(turbidityT2);
+  static final double turbidityTurbidMax = turbidityPercentOf(turbidityT3);
+
+  /// The firmware's four status words, from a percentage.
+  static String turbidityStatusOf(double percent) {
+    if (percent <= turbidityClearMax) return 'Clear';
+    if (percent <= turbiditySlightlyMax) return 'Slightly Turbid';
+    if (percent <= turbidityTurbidMax) return 'Turbid';
+    return 'Highly Turbid';
+  }
+
+  /// "Needs attention" starts where the firmware says "Turbid".
+  static bool turbidityIsSafe(double percent) => percent <= turbiditySlightlyMax;
+
+  // ───────────────────────── ammonia (mg/L) ─────────────────────────
+  // getAmmoniaStatus() in the firmware: < 0.25 Safe, < 0.50 Warning,
+  // else Critical. The device reports mg/L — never ppm.
+  static const double ammoniaSafeMax = 0.25;
+  static const double ammoniaWarningMax = 0.50;
+
+  /// Top of the MQ-137's calibrated span (AMMONIA_C2). The firmware
+  /// clamps here rather than extrapolating, so the app will never
+  /// receive a value above it.
+  static const double ammoniaCalibratedMax = 0.53;
+
+  static const String ammoniaUnit = ' mg/L';
+
+  static bool ammoniaIsSafe(double mgL) => mgL < ammoniaWarningMax;
+
+  static String ammoniaStatusOf(double mgL) {
+    if (mgL < ammoniaSafeMax) return 'Safe';
+    if (mgL < ammoniaWarningMax) return 'Warning';
+    return 'Critical';
+  }
+
+  // ───────────────────────── feeder ─────────────────────────
+  // gramsToOpenMs() has a calibrated open time for exactly these six
+  // doses; anything else falls back to the 10 g timing, so the app
+  // must only ever offer these.
+  static const List<int> feedGramOptions = [5, 10, 15, 20, 25, 30];
+
+  /// SERVO open time per dose, in milliseconds — shown in the app so
+  /// the dose dropdown explains itself.
+  static const Map<int, int> feedOpenMs = {
+    5: 400,
+    10: 800,
+    15: 1200,
+    20: 1600,
+    25: 2000,
+    30: 2400,
+  };
+
+  /// FEED_SETTLE_MS + ROTATOR_RUN_MS: after the door closes the feed is
+  /// given 1.5 s to drop, then the rotator spins for 2.0 s.
+  static const Duration feedSettle = Duration(milliseconds: 1500);
+  static const Duration rotatorRun = Duration(milliseconds: 2000);
+
+  /// Total wall-clock time one feed takes on the device.
+  static Duration feedCycleFor(int grams) =>
+      Duration(milliseconds: feedOpenMs[grams] ?? 800) + feedSettle + rotatorRun;
+
+  /// FEED_COMMAND_MAX_AGE_S: a queued Feed Now older than this is
+  /// dropped by the device instead of dispensed, so a tank that was
+  /// offline does not get every missed feed at once on reconnect.
+  static const Duration feedCommandMaxAge = Duration(minutes: 10);
+
+  /// NTP_GMT_OFFSET — the device fires schedules on its own clock, at
+  /// UTC+8, whether or not the phone is in that zone.
+  static const int deviceUtcOffsetHours = 8;
+  static const String deviceTimezoneLabel = 'device time (UTC+8)';
+
+  // ───────────────────── rotator (DC motor) ─────────────────────
+  // setMotor1() in the firmware drives Motor 1 — the DC rotator that
+  // runs after each feed — by raw PWM. These five levels are the bench
+  // sketch's own manual test steps (serial keys 2..6), so the app
+  // offers exactly the speeds the firmware was validated at.
+  static const List<RotatorSpeed> rotatorSpeeds = [
+    RotatorSpeed('Off', 0, 0),
+    RotatorSpeed('25%', 25, 90),
+    RotatorSpeed('50%', 50, 128),
+    RotatorSpeed('75%', 75, 191),
+    RotatorSpeed('100%', 100, 255),
+  ];
+
+  /// What a feed uses when nothing else is chosen — full speed, which
+  /// is what the firmware did unconditionally before the speed became
+  /// selectable.
+  static const int rotatorDefaultPwm = 255;
+
+  static RotatorSpeed rotatorSpeedForPwm(int pwm) => rotatorSpeeds.firstWhere(
+        (s) => s.pwm == pwm,
+        orElse: () => rotatorSpeeds.last,
+      );
+
+  /// MOTOR_TEST_MAX_MS: the firmware stops a test-driven motor by
+  /// itself after this long, so a forgotten test cannot leave it
+  /// running. Shown in the UI so the behaviour is not a surprise.
+  static const Duration motorTestTimeout = Duration(seconds: 30);
+
+  // ───────────────────────── servo ─────────────────────────
+  // SERVO_OPEN_ANGLE / SERVO_CLOSED_ANGLE.
+  static const int servoOpenAngle = 160;
+  static const int servoClosedAngle = 180;
+
+  /// SERVO_TEST_MAX_OPEN_MS: an open feeder door drops feed, so the
+  /// firmware force-closes it after this long if a test left it open.
+  static const Duration servoTestAutoClose = Duration(seconds: 10);
+
+  // ───────────────────── log streaming ─────────────────────
+  // The device always publishes its event lines (feeds, commands, WiFi
+  // changes, errors). The full serial output — including the sensor
+  // block it prints every SENSOR_INTERVAL — is only mirrored while the
+  // app has asked for it, so the log table is not filled around the
+  // clock by a console nobody is watching.
+
+  /// How long one `log_stream` request keeps verbose output flowing.
+  /// The console screen renews it well before this lapses.
+  static const Duration logStreamWindow = Duration(minutes: 5);
+
+  /// How often the console renews that request while it is open.
+  static const Duration logStreamRenew = Duration(minutes: 2);
+
+  /// Lines held in the console. The firmware's own ring buffer is much
+  /// smaller (MAX_LOG_LINES); this is the app-side scrollback.
+  static const int logScrollback = 400;
+
+  // ───────────────── app-side water-quality ranges ─────────────────
+  // These are NOT in the firmware — the device measures, it does not
+  // judge. They are the aquaculture ranges the app alerts on, kept
+  // here so every screen uses one definition.
+  static const double phSafeMin = 6.5;
+  static const double phSafeMax = 8.5;
+  static bool phIsSafe(double ph) => ph >= phSafeMin && ph <= phSafeMax;
+
+  static const double waterTempSafeMinC = 20.0;
+  static const double waterTempSafeMaxC = 30.0;
+  static bool waterTempIsSafe(double c) =>
+      c >= waterTempSafeMinC && c <= waterTempSafeMaxC;
+
+  static bool housingTempIsSafe(double c) => c < housingHotC;
+}

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../core/theme.dart';
 
 /// Small, minimal header - the idle mascot animation on the left,
 /// screen title on the right. Shared across Management, Device
@@ -15,18 +14,29 @@ class MinimalGifHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(40),
-          child: Image.asset('assets/images/mascot/idle-anim.gif', width: 70, height: 70, fit: BoxFit.cover),
+        ClipOval(
+          child: Image.asset('assets/images/mascot/idle-anim.gif', width: 42, height: 42, fit: BoxFit.cover),
         ),
         const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: AppColors.textPrimary, letterSpacing: -0.5)),
-            if (subtitle != null)
-              Text(subtitle!, style: const TextStyle(color: AppColors.textMuted, fontSize: 13, fontWeight: FontWeight.w500)),
-          ],
+        // Expanded + single-line ellipsis so the title/subtitle can never
+        // push past the header's fixed height (no "BOTTOM OVERFLOWED").
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 20, height: 1.05, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: -0.4)),
+              if (subtitle != null)
+                Text(subtitle!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.72), fontSize: 12, height: 1.15, fontWeight: FontWeight.w500)),
+            ],
+          ),
         ),
       ],
     );

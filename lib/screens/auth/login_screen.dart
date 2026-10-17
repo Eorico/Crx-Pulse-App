@@ -2,9 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/theme.dart';
 import '../../services/auth_service.dart';
+import '../../widgets/auth_widgets.dart';
+import '../../widgets/motion.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
 
+/// Pixel-matched to the original React Native login.screen.tsx:
+/// green rounded-bottom header with the CRX-PULSE badge, the real
+/// Login.png artwork, cream form area below, OR divider, Sign Up
+/// link - same layout, same colors, same copy.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -25,8 +31,28 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       await _auth.signIn(_emailController.text, _passwordController.text);
-      // On success, the auth-state StreamBuilder in main.dart takes
-      // over automatically - no manual navigation needed here.
+    } catch (e) {
+      setState(() => _error = _auth.friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _onGoogleSignIn() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      await _auth.signInWithGoogle();
+    } catch (e) {
+      setState(() => _error = _auth.friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _onFacebookSignIn() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      await _auth.signInWithFacebook();
     } catch (e) {
       setState(() => _error = _auth.friendlyError(e));
     } finally {
@@ -39,86 +65,109 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(28, 40, 28, 24),
-          children: [
-            Container(
-              width: 72, height: 72,
-              decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(22)),
-              child: const Icon(LucideIcons.waves, color: Colors.white, size: 34),
-            ),
-            const SizedBox(height: 24),
-            const Text('Welcome back', style: TextStyle(fontSize: 30, fontWeight: FontWeight.w900, color: AppColors.textPrimary, letterSpacing: -0.5)),
-            const SizedBox(height: 6),
-            const Text('Sign in to keep monitoring your pond', style: TextStyle(color: AppColors.textMuted, fontSize: 14, fontWeight: FontWeight.w500)),
-            const SizedBox(height: 32),
-
-            if (_error != null) ...[
+        child: SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── HEADER ──
               Container(
-                padding: const EdgeInsets.all(14),
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(14), border: Border.all(color: Colors.red.shade200)),
-                child: Row(children: [
-                  Icon(LucideIcons.alertCircle, color: Colors.red.shade600, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(child: Text(_error!, style: TextStyle(color: Colors.red.shade700, fontSize: 13))),
-                ]),
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
+                decoration: const BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.only(bottomLeft: Radius.circular(40), bottomRight: Radius.circular(40)),
+                ),
+                // Badge, artwork, then the two lines of copy, each a
+                // beat behind the last.
+                child: Column(
+                  children: FadeSlideIn.stagger([
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                      decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(16)),
+                      child: const Text('CRX-PULSE', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 2)),
+                    ),
+                    const SizedBox(height: 24),
+                    Image.asset('assets/images/Login.png', width: double.infinity, height: 200, fit: BoxFit.contain),
+                    const SizedBox(height: 16),
+                    const Text('Welcome Back', style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    const Text('Sign in to monitor your crayfish system', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFFC8D8C8), fontSize: 14)),
+                  ]),
+                ),
+              ),
+
+              // ── FORM ──
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 32, 24, 40),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: FadeSlideIn.stagger([
+                    // The error banner expands into place and collapses
+                    // away, so it never jolts the form.
+                    AnimatedSize(
+                      duration: AppMotion.normal,
+                      curve: AppMotion.smooth,
+                      alignment: Alignment.topCenter,
+                      child: _error != null
+                          ? AuthErrorBanner(message: _error!)
+                          : const SizedBox(width: double.infinity),
+                    ),
+
+                    // Social sign-in first, above the email form.
+                    SocialSignInButtons(
+                      loading: _loading,
+                      onGooglePressed: _onGoogleSignIn,
+                      onFacebookPressed: _onFacebookSignIn,
+                    ),
+                    const AuthOrDivider(),
+
+                    const AuthFieldLabel('Email Address'),
+                    AuthTextField(controller: _emailController, hint: 'your@email.com', keyboardType: TextInputType.emailAddress),
+
+                    const SizedBox(height: 20),
+                    const AuthFieldLabel('Password'),
+                    AuthTextField(
+                      controller: _passwordController,
+                      hint: 'Enter your password',
+                      obscure: _obscure,
+                      suffix: IconButton(
+                        icon: Icon(_obscure ? LucideIcons.eye : LucideIcons.eyeOff, color: const Color(0xFF999999), size: 18),
+                        onPressed: () => setState(() => _obscure = !_obscure),
+                      ),
+                    ),
+
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: PressableScale(
+                          pressedScale: 0.92,
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen())),
+                          child: const Text('Forgot Password?', style: TextStyle(color: AppColors.accent, fontSize: 14, fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+                    PrimaryAuthButton(label: 'Sign In', loading: _loading, onPressed: _onSignIn),
+
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text("Don't have an account? ", style: TextStyle(color: Colors.grey, fontSize: 14)),
+                        PressableScale(
+                          pressedScale: 0.92,
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
+                          child: const Text('Sign Up', style: TextStyle(color: AppColors.primary, fontSize: 14, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ]),
+                ),
               ),
             ],
-
-            const Text('Email', style: TextStyle(color: AppColors.textSecondary, fontSize: 13, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(hintText: 'you@example.com', prefixIcon: Icon(LucideIcons.mail, size: 18)),
-            ),
-            const SizedBox(height: 18),
-            const Text('Password', style: TextStyle(color: AppColors.textSecondary, fontSize: 13, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _passwordController,
-              obscureText: _obscure,
-              decoration: InputDecoration(
-                hintText: '••••••••',
-                prefixIcon: const Icon(LucideIcons.lock, size: 18),
-                suffixIcon: IconButton(
-                  icon: Icon(_obscure ? LucideIcons.eye : LucideIcons.eyeOff, size: 18),
-                  onPressed: () => setState(() => _obscure = !_obscure),
-                ),
-              ),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen())),
-                child: const Text('Forgot password?'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              height: 54,
-              child: ElevatedButton(
-                onPressed: _loading ? null : _onSignIn,
-                style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
-                child: _loading
-                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text('Sign In', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text("Don't have an account? ", style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
-                GestureDetector(
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
-                  child: const Text('Create one', style: TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w700)),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );

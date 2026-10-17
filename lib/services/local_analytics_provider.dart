@@ -25,10 +25,10 @@ class SensorHistoryPoint {
   );
 }
 
-/// Logs a sensor snapshot to SQLite roughly once a minute (not every
-/// 3-second poll - that would make the history table enormous for no
-/// real analytical benefit) and serves trend queries for the
-/// Analytics tab's charts.
+/// Logs a sensor snapshot to SQLite roughly once a minute (not on every
+/// reading the device pushes — that would make the history table
+/// enormous for no real analytical benefit) and serves trend queries
+/// for the Analytics tab's charts.
 class LocalAnalyticsProvider extends ChangeNotifier {
   List<SensorHistoryPoint> history = [];
   bool isLoading = false;
@@ -72,9 +72,10 @@ class LocalAnalyticsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Used by the Firebase sync service - records not yet pushed to
-  /// Firestore, oldest first, capped to a reasonable batch size so a
-  /// huge backlog doesn't try to upload thousands of rows in one shot.
+  /// Leftover from the Firebase build, where the phone relayed history
+  /// to the cloud. Nothing calls these two now: the ESP32 writes every
+  /// reading to Supabase itself, so there is no backlog to upload.
+  /// Kept because the column they read still exists (see [LocalDb]).
   Future<List<Map<String, dynamic>>> getUnsyncedBatch({int limit = 200}) async {
     final db = await LocalDb.instance.database;
     return db.query('sensor_history', where: 'synced_to_firebase = 0', orderBy: 'recorded_at ASC', limit: limit);

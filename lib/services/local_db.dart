@@ -1,11 +1,21 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
-/// Per the move to a fully offline app: this is the app's own local
-/// database now, living entirely on the phone. There is no server to
-/// sync with - feeding schedules and notification history exist only
-/// on this device, matching the same "fully offline" spirit as the
-/// ESP32 connection itself.
+/// The app's on-device database.
+///
+/// In the Supabase build this holds only what is genuinely local to
+/// this phone: the notification history (alerts are evaluated here from
+/// live readings) and the sensor history the Analytics tab charts.
+///
+/// Feeding schedules are NOT stored here any more — they live in
+/// Supabase, because the ESP32 has to be able to read them itself. The
+/// `feeding_schedules` table below is kept so an upgrade from an older
+/// install does not drop data, but nothing writes to it.
+///
+/// Likewise `sensor_history.synced_to_firebase` is a leftover column
+/// name from the Firebase build. Renaming it would need a migration for
+/// no behavioural gain, so it stays; nothing uploads any more, because
+/// the device writes to the cloud directly.
 class LocalDb {
   LocalDb._();
   static final LocalDb instance = LocalDb._();

@@ -1,99 +1,89 @@
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Thin wrapper around FirebaseAuth - the actual account system now,
-/// replacing the old custom JWT backend entirely. Firebase handles
-/// password hashing, token refresh, and session persistence on its
-/// own; this class just exposes the operations the UI needs.
-///
-/// Firestore structure this writes to:
-///   users/{uid}/account-information/profile
-/// Every document this class ever touches is scoped under the
-/// CURRENTLY authenticated user's own UID - there is no code path
-/// here that can read or write another user's data, which is also
-/// enforced server-side by the Firestore security rules regardless.
+/// Account system, now on Supabase Auth (was Firebase Auth). Supabase
+/// handles password hashing, token refresh, and session persistence.
+/// The display name is stored in the user's auth metadata
+/// (user_metadata.display_name) — no separate profile table needed.
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final SupabaseClient _sb = Supabase.instance.client;
 
-  User? get currentUser => _auth.currentUser;
-  Stream<User?> get authStateChanges => _auth.authStateChanges();
+  /// Kept so the register flow can briefly suppress the auth gate while
+  /// it signs the brand-new account back out (so registration lands on
+  /// Login, not straight into the app).
+  static final ValueNotifier<bool> isProcessingRegistration = ValueNotifier(false);
 
-  Future<UserCredential> signIn(String email, String password) {
-    return _auth.signInWithEmailAndPassword(email: email.trim(), password: password);
+  User? get currentUser => _sb.auth.currentUser;
+
+  Future<void> signIn(String email, String password) async {
+    await _sb.auth.signInWithPassword(email: email.trim(), password: password);
   }
 
-  Future<UserCredential> register(String email, String password, String displayName) async {
-    final credential = await _auth.createUserWithEmailAndPassword(email: email.trim(), password: password);
-    final user = credential.user;
-    if (user == null) return credential;
-
-    await user.updateDisplayName(displayName.trim());
-
-    // Per the required Firestore structure: registration details go
-    // under this user's OWN document, in a fixed-name "profile" doc
-    // within account-information - never anywhere shared, never
-    // keyed by name (the UID is the only identifier used).
-    await _firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('account-information')
-        .doc('profile')
-        .set({
-      'displayName': displayName.trim(),
-      'email': email.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-
-    return credential;
+  /// Registers the account (display name in metadata), then signs OUT so
+  /// the user lands on Login to sign in fresh — matching the old flow.
+  Future<void> register(String email, String password, String displayName) async {
+    isProcessingRegistration.value = true;
+    try {
+      await _sb.auth.signUp(
+        email: email.trim(),
+        password: password,
+        data: {'display_name': displayName.trim()},
+      );
+      await _sb.auth.signOut();
+    } finally {
+      isProcessingRegistration.value = false;
+    }
   }
 
   Future<void> sendPasswordResetEmail(String email) {
-    return _auth.sendPasswordResetEmail(email: email.trim());
+    return _sb.auth.resetPasswordForEmail(email.trim());
   }
 
-  Future<void> signOut() => _auth.signOut();
+  /// OAuth sign-in. Requires the provider to be enabled in
+  /// Supabase -> Authentication -> Providers, plus a deep-link redirect
+  /// configured for the app. Email/password works with no extra setup.
+  Future<void> signInWithGoogle() async {
+    await _sb.auth.signInWithOAuth(OAuthProvider.google);
+  }
 
-  /// Reads the CURRENTLY signed-in user's own account-information
-  /// document - never accepts a UID parameter, so it's structurally
-  /// impossible to call this for anyone but yourself.
+  Future<void> signInWithFacebook() async {
+    await _sb.auth.signInWithOAuth(OAuthProvider.facebook);
+  }
+
+  Future<void> signOut() => _sb.auth.signOut();
+
+  /// The signed-in user's own profile fields, read from the auth user.
   Future<Map<String, dynamic>?> getMyAccountInfo() async {
-    final user = _auth.currentUser;
-    if (user == null) return null;
-    final doc = await _firestore
-        .collection('users')
-        .doc(user.uid)
-        .collection('account-information')
-        .doc('profile')
-        .get();
-    return doc.data();
+    final u = _sb.auth.currentUser;
+    if (u == null) return null;
+    return {
+      'displayName': (u.userMetadata?['display_name'] as String?) ?? '',
+      'email': u.email ?? '',
+      'createdAt': u.createdAt, // ISO-8601 string
+    };
   }
 
-  /// Translates Firebase's error codes into plain-language messages -
-  /// the raw codes (e.g. "wrong-password", "user-not-found") aren't
-  /// something to show someone directly.
+  /// Plain-language messages from Supabase's AuthException.
   String friendlyError(Object e) {
-    if (e is! FirebaseAuthException) return 'Something went wrong. Please try again.';
-    switch (e.code) {
-      case 'invalid-email':
-        return 'That email address doesn\'t look right.';
-      case 'user-disabled':
-        return 'This account has been disabled.';
-      case 'user-not-found':
-        return 'No account found with that email.';
-      case 'wrong-password':
-      case 'invalid-credential':
+    if (e is AuthException) {
+      final m = e.message.toLowerCase();
+      if (m.contains('invalid login') || m.contains('invalid credentials')) {
         return 'Incorrect email or password.';
-      case 'email-already-in-use':
+      }
+      if (m.contains('already registered') || m.contains('already been registered') || m.contains('already exists')) {
         return 'An account already exists with that email.';
-      case 'weak-password':
+      }
+      if (m.contains('should be at least') || m.contains('password')) {
         return 'Please choose a stronger password (at least 6 characters).';
-      case 'too-many-requests':
+      }
+      if (m.contains('not confirmed') || m.contains('confirm')) {
+        return 'Please confirm your email first (check your inbox).';
+      }
+      if (m.contains('rate') || m.contains('too many')) {
         return 'Too many attempts. Please wait a moment and try again.';
-      case 'network-request-failed':
-        return 'No internet connection - check your mobile data or WiFi.';
-      default:
-        return e.message ?? 'Something went wrong. Please try again.';
+      }
+      return e.message;
     }
+    return 'Something went wrong. Please try again.';
   }
 }

@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="?android:colorBackground" />
+<!--
+  CRX-Pulse launch splash.
 
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+  Explicitly WHITE, not `?android:colorBackground`. With the theme
+  default, a phone in dark mode resolved colorBackground to black, so
+  the app opened on a black screen and then jumped to the white in-app
+  splash. Both are white now, so the hand-off is invisible.
+
+  Keep this in step with:
+    - drawable/launch_background.xml   (pre-API-21 devices)
+    - values/styles.xml + values-night/styles.xml
+    - SplashScreen's phase 1 background (lib/screens/splash)
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/white" />
 </layer-list>

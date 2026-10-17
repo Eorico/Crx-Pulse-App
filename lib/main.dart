@@ -1,32 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/theme.dart';
+import 'core/supabase_config.dart';
 import 'services/local_esp32_service.dart';
 import 'services/floating_widget_position_provider.dart';
 import 'services/local_feeding_provider.dart';
 import 'services/local_notification_provider.dart';
 import 'services/local_analytics_provider.dart';
-import 'services/firebase_sync_service.dart';
+import 'services/device_provider.dart';
+import 'services/device_log_provider.dart';
+import 'services/device_test_provider.dart';
+import 'services/auth_service.dart';
 import 'screens/main_tab_scaffold.dart';
 import 'screens/auth/login_screen.dart';
-import 'firebase_options.dart';
+import 'screens/splash/splash_screen.dart';
+import 'widgets/motion.dart';
 
-/// IMPORTANT: firebase_options.dart does NOT exist until you run
-/// `flutterfire configure` against your real Firebase project (see
-/// the setup guide) - this import will fail to resolve until then.
-/// That's expected and correct; it's not something to hand-write.
-
-/// ESP32 <-> Flutter stays local WiFi only, exactly as before -
-/// Firebase's ONLY role is account auth (replacing the old JWT
-/// backend) and a background sync of SQLite sensor history whenever
-/// the phone has internet, for cross-device/cloud access to your
-/// data. The ESP32 itself never talks to Firebase at all.
+/// Architecture now: ESP32 -> WiFi router -> Supabase (Postgres +
+/// PostgREST + Realtime) -> this app. There is no backend server to
+/// deploy — the ESP32 inserts readings straight into the `readings`
+/// table and the app subscribes to it live. Feeding schedules and
+/// commands are plain rows the app writes and the ESP32 reads.
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.anonKey,
+  );
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -49,21 +52,27 @@ class CrxPulseApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => LocalFeedingProvider()),
         ChangeNotifierProvider(create: (_) => LocalNotificationProvider()),
         ChangeNotifierProvider(create: (_) => LocalAnalyticsProvider()),
+        ChangeNotifierProvider(create: (_) => DeviceProvider()),
+        // Registered at the root, not inside the Settings screen: the
+        // log feed must survive that screen being rebuilt as you swipe
+        // between tabs, and Settings' dispose() reads it to switch
+        // verbose streaming off.
+        ChangeNotifierProvider(create: (_) => DeviceLogProvider()),
+        ChangeNotifierProvider(create: (_) => DeviceTestProvider()),
       ],
       child: MaterialApp(
         title: 'CRX-Pulse',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
-        home: const _AuthGate(),
+        // 3-second in-app splash, then the auth gate.
+        home: const SplashScreen(next: _AuthGate()),
       ),
     );
   }
 }
 
-/// Shows Login when signed out, MainTabScaffold when signed in -
-/// FirebaseAuth's own stream handles session persistence across app
-/// restarts automatically, no manual token storage needed like the
-/// old backend required.
+/// Shows Login when signed out, MainTabScaffold when signed in — driven
+/// by Supabase Auth's session stream.
 class _AuthGate extends StatefulWidget {
   const _AuthGate();
 
@@ -72,35 +81,53 @@ class _AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<_AuthGate> {
-  FirebaseSyncService? _syncService;
+  bool _deviceStarted = false;
 
-  void _startSyncIfNeeded(BuildContext context) {
-    if (_syncService != null) return;
-    _syncService = FirebaseSyncService(context.read<LocalAnalyticsProvider>());
-    _syncService!.start();
+  void _onSignedIn(BuildContext context) {
+    if (_deviceStarted) return;
+    _deviceStarted = true;
+    context.read<DeviceProvider>().start();
   }
 
-  @override
-  void dispose() {
-    _syncService?.dispose();
-    super.dispose();
+  void _onSignedOut(BuildContext context) {
+    if (!_deviceStarted) return;
+    _deviceStarted = false;
+    context.read<LocalEsp32Service>().stopPolling();
+    context.read<DeviceProvider>().stop();
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: AuthService.isProcessingRegistration,
+      builder: (context, isRegistering, _) {
+        if (isRegistering) {
           return const Scaffold(body: Center(child: CircularProgressIndicator(color: AppColors.primary)));
         }
-        if (snapshot.hasData) {
-          _startSyncIfNeeded(context);
-          return const MainTabScaffold();
-        }
-        _syncService?.dispose();
-        _syncService = null;
-        return const LoginScreen();
+
+        return StreamBuilder<AuthState>(
+          stream: Supabase.instance.client.auth.onAuthStateChange,
+          builder: (context, snapshot) {
+            final session = Supabase.instance.client.auth.currentSession;
+            final signedIn = session != null;
+
+            if (signedIn) {
+              WidgetsBinding.instance.addPostFrameCallback((_) => _onSignedIn(context));
+            } else {
+              WidgetsBinding.instance.addPostFrameCallback((_) => _onSignedOut(context));
+            }
+
+            // Signing in and out cross-fades rather than cutting
+            // straight from the login form to the dashboard. Keyed on
+            // the session state only, so a rebuild for any other reason
+            // does not re-run the transition.
+            return SwapIn(
+              swapKey: signedIn,
+              duration: AppMotion.slow,
+              child: signedIn ? const MainTabScaffold() : const LoginScreen(),
+            );
+          },
+        );
       },
     );
   }
