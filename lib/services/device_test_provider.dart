@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
+import '../core/supabase_diagnosis.dart';
 
 /// Drives the feeder servo and the DC rotator directly, for the Test
 /// Components screen.
@@ -22,7 +23,14 @@ class DeviceTestProvider extends ChangeNotifier {
   /// The last command sent, for the UI to echo back.
   String? lastAction;
   bool sending = false;
-  String? errorMessage;
+
+  /// Non-null when the last command failed. Carries the real reason and
+  /// the fix — a generic "Could not send the command" made a missing
+  /// `commands.value` column (i.e. the schema not being re-run) look
+  /// like a mystery.
+  SupabaseDiagnosis? diagnosis;
+
+  String? get errorMessage => diagnosis?.combined;
 
   /// Rotator PWM the user has dialled in. Not the device's actual
   /// speed — that is only known from the log or the next reading.
@@ -61,13 +69,18 @@ class DeviceTestProvider extends ChangeNotifier {
       {int? value, required String label}) async {
     final uid = _sb.auth.currentUser?.id;
     if (uid == null) {
-      errorMessage = 'Not signed in.';
+      diagnosis = const SupabaseDiagnosis(
+        fault: SupabaseFault.notSignedIn,
+        summary: 'Not signed in, so the command cannot be sent.',
+        fix: 'Sign out and sign back in.',
+        detail: 'currentUser == null',
+      );
       notifyListeners();
       return false;
     }
 
     sending = true;
-    errorMessage = null;
+    diagnosis = null;
     notifyListeners();
 
     try {
@@ -81,7 +94,7 @@ class DeviceTestProvider extends ChangeNotifier {
       lastAction = label;
       return true;
     } catch (e) {
-      errorMessage = 'Could not send the command.';
+      diagnosis = SupabaseDiagnosis.from(e, what: 'send the command');
       return false;
     } finally {
       sending = false;

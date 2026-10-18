@@ -146,9 +146,14 @@ class FirmwareSpec {
   };
 
   /// FEED_SETTLE_MS + ROTATOR_RUN_MS: after the door closes the feed is
-  /// given 1.5 s to drop, then the rotator spins for 2.0 s.
+  /// given 1.5 s to drop, then the rotator spins for 12 s — long enough
+  /// to complete a turn, where the old 2 s was not.
+  ///
+  /// The firmware runs that 12 s as a deadline serviced from loop(),
+  /// not a delay(), so readings keep flowing during a feed and the app
+  /// does not briefly see the device as offline.
   static const Duration feedSettle = Duration(milliseconds: 1500);
-  static const Duration rotatorRun = Duration(milliseconds: 2000);
+  static const Duration rotatorRun = Duration(milliseconds: 12000);
 
   /// Total wall-clock time one feed takes on the device.
   static Duration feedCycleFor(int grams) =>
