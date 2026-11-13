@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
+import 'reading_cache.dart';
 
 /// Live sensor readings — now a Supabase Realtime subscription on the
 /// `readings` table (was a Firestore stream).
@@ -22,6 +23,9 @@ enum Esp32ConnectionState { connecting, connected, unreachable }
 const Duration _freshWindow = FirmwareSpec.freshWindow;
 
 class LocalEsp32Service extends ChangeNotifier {
+  LocalEsp32Service({ReadingCache cache = const ReadingCache()})
+      : _cache = cache;
+
   final SupabaseClient _sb = Supabase.instance.client;
 
   Esp32ConnectionState state = Esp32ConnectionState.connecting;
@@ -40,6 +44,13 @@ class LocalEsp32Service extends ChangeNotifier {
   String? macAddress;     // retained for API compatibility; unused now
   DateTime? lastUpdated;
 
+  /// True while the values above came from the on-device cache rather
+  /// than from a live reading. The UI labels them with their age so a
+  /// remembered value is never mistaken for a current one.
+  bool isShowingCached = false;
+
+  final ReadingCache _cache;
+
   StreamSubscription<List<Map<String, dynamic>>>? _sub;
   Timer? _staleTimer;
   bool _disposed = false;
@@ -56,6 +67,47 @@ class LocalEsp32Service extends ChangeNotifier {
     ambientTempC = null;
     fanActive = false;
     fanDutyPercent = 0;
+    isShowingCached = false;
+  }
+
+  /// Paint the last known reading before the network is touched.
+  ///
+  /// This is the whole point of the cache: resolving the paired device
+  /// and opening the subscription are two round trips, and until they
+  /// finish the dashboard has nothing to draw. Restoring here means the
+  /// values are on screen in the time it takes to read one row of
+  /// SQLite, and the live stream simply overwrites them when it opens.
+  ///
+  /// Only restores a reading that is still inside [_freshWindow].
+  ///
+  /// That keeps the standing rule intact: when the device is not being
+  /// tracked, no last reading is shown. An older cached value would be
+  /// cleared by the staleness check within seconds anyway, so painting
+  /// it first would only produce a flash of a number the dashboard is
+  /// required not to display.
+  ///
+  /// Never upgrades the connection state — a remembered value is not
+  /// evidence the device is reachable now.
+  Future<void> _restoreFromCache() async {
+    if (lastUpdated != null) return;   // a live reading already won
+
+    final cached = await _cache.load();
+    if (cached == null || _disposed || lastUpdated != null) return;
+
+    final age = DateTime.now().difference(cached.recordedAt).abs();
+    if (age > _freshWindow) return;
+
+    ph              = cached.ph;
+    ammonia         = cached.ammonia;
+    turbidity       = cached.turbidity;
+    turbidityStatus = cached.turbidityStatus;
+    waterTempC      = cached.waterTempC;
+    ambientTempC    = cached.ambientTempC;
+    fanActive       = cached.fanActive;
+    fanDutyPercent  = cached.fanDutyPercent;
+    lastUpdated     = cached.recordedAt;
+    isShowingCached = true;
+    notifyListeners();
   }
 
   /// Kept named startPolling() so call sites don't change. Resolves the
@@ -65,9 +117,15 @@ class LocalEsp32Service extends ChangeNotifier {
   Future<void> startPolling() async {
     if (_sub != null) return;
 
+    // Before any await, so the dashboard fills immediately rather than
+    // after the device lookup and the subscription handshake.
+    await _restoreFromCache();
+
     final uid = _sb.auth.currentUser?.id;
     if (uid == null) {
       _clearReadings();
+      lastUpdated = null;
+      unawaited(_cache.clear());
       state = Esp32ConnectionState.unreachable;
       errorMessage = 'Not signed in.';
       notifyListeners();
@@ -79,6 +137,8 @@ class LocalEsp32Service extends ChangeNotifier {
       final devs = await _sb.from('devices').select('device_id').eq('user_id', uid).limit(1);
       if (devs.isEmpty) {
         _clearReadings();
+        lastUpdated = null;
+        unawaited(_cache.clear());
         state = Esp32ConnectionState.unreachable;
         errorMessage = 'No paired device yet — pair one in Setup.';
         notifyListeners();
@@ -160,6 +220,22 @@ class LocalEsp32Service extends ChangeNotifier {
     fanDutyPercent  = (d['fan_percent'] as num?)?.toInt() ?? 0;
 
     lastUpdated = readingTime.toLocal();
+    isShowingCached = false;
+
+    // Remember it for the next cold start. Fire-and-forget: a failed
+    // cache write must not delay or disturb the live update.
+    unawaited(_cache.save(CachedReading(
+      ph: ph,
+      ammonia: ammonia,
+      turbidity: turbidity,
+      turbidityStatus: turbidityStatus,
+      waterTempC: waterTempC,
+      ambientTempC: ambientTempC,
+      fanActive: fanActive,
+      fanDutyPercent: fanDutyPercent,
+      recordedAt: lastUpdated!,
+    )));
+
     _reevaluate(justReceived: true);
   }
 

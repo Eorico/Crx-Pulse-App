@@ -5,6 +5,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/theme.dart';
 import '../../core/sensor_icons.dart';
 import '../../core/firmware_spec.dart';
+import '../../core/metric_bands.dart';
+import '../../core/trend_series.dart';
 import '../../services/local_analytics_provider.dart';
 import '../../widgets/minimal_gif_header.dart';
 import '../../widgets/fade_in.dart';
@@ -21,6 +23,19 @@ import '../../widgets/sticky_header_delegate.dart';
 
 // ───────────────────────── color helpers ─────────────────────────
 Color _lighten(Color c, [double amt = 0.22]) => Color.lerp(c, Colors.white, amt)!;
+
+/// `1284` -> `1,284`. Reading counts run into the tens of thousands
+/// once the cloud history is in play, and unseparated digits at 11pt
+/// are hard to size up at a glance.
+String _grouped(int n) {
+  final digits = n.toString();
+  final buf = StringBuffer();
+  for (int i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) buf.write(',');
+    buf.write(digits[i]);
+  }
+  return buf.toString();
+}
 Color _darken(Color c, [double amt = 0.22]) => Color.lerp(c, Colors.black, amt)!;
 
 class LocalAnalyticsScreen extends StatefulWidget {
@@ -31,19 +46,30 @@ class LocalAnalyticsScreen extends StatefulWidget {
 }
 
 class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
-  int _hoursBack = 24;
+  /// Null means "everything on record", not "nothing".
+  int? _hoursBack = 24;
+
+  /// Handed to the provider so the database can count the zone
+  /// distribution itself. Same objects the cards classify with, so
+  /// there is one definition of every boundary.
+  Map<String, MetricBands> get _bands =>
+      {for (final m in _metricSpecs()) m.bands.column: m.bands};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<LocalAnalyticsProvider>().fetchHistory(hoursBack: _hoursBack);
+      context
+          .read<LocalAnalyticsProvider>()
+          .fetchHistory(hoursBack: _hoursBack, bands: _bands);
     });
   }
 
-  void _changeRange(int hours) {
+  void _changeRange(int? hours) {
     setState(() => _hoursBack = hours);
-    context.read<LocalAnalyticsProvider>().fetchHistory(hoursBack: hours);
+    context
+        .read<LocalAnalyticsProvider>()
+        .fetchHistory(hoursBack: hours, bands: _bands);
   }
 
   @override
@@ -57,7 +83,12 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
     // 19.9 / 48.5 / 78.6 %) instead of invented 25 / 60 % cuts, and
     // Housing Temperature is split at the two points where the cooling
     // fan actually changes behaviour rather than at 35 / 45 °C.
-    final metrics = <_MetricSpec>[
+    final metrics = _metricSpecs();
+    return _buildBody(context, analytics, metrics);
+  }
+
+  List<_MetricSpec> _metricSpecs() {
+    return <_MetricSpec>[
       _MetricSpec(
         title: 'pH Level', unit: '', decimals: 2, color: const Color(0xFF3B82F6),
         icon: LucideIcons.droplets, assetIcon: SensorIcons.ph, select: (p) => p.ph,
@@ -66,9 +97,13 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Optimal', Color(0xFF22C55E)),
           _Zone('High', Color(0xFFEF4444)),
         ],
-        zoneOf: (v) => v < FirmwareSpec.phSafeMin
-            ? 0
-            : (v <= FirmwareSpec.phSafeMax ? 1 : 2),
+        // 6.5 is the bottom of SAFE, so it belongs to Optimal: strict.
+        // 8.5 is the TOP of safe, so it belongs to Optimal: inclusive.
+        bands: const MetricBands(
+          column: 'ph',
+          cuts: [FirmwareSpec.phSafeMin, FirmwareSpec.phSafeMax],
+          strict: [true, false],
+        ),
       ),
       _MetricSpec(
         title: 'Ammonia',
@@ -83,9 +118,11 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Warning', Color(0xFFF59E0B)),
           _Zone('Critical', Color(0xFFEF4444)),
         ],
-        zoneOf: (v) => v < FirmwareSpec.ammoniaSafeMax
-            ? 0
-            : (v < FirmwareSpec.ammoniaWarningMax ? 1 : 2),
+        bands: const MetricBands(
+          column: 'ammonia',
+          cuts: [FirmwareSpec.ammoniaSafeMax, FirmwareSpec.ammoniaWarningMax],
+          strict: [true, true],
+        ),
       ),
       _MetricSpec(
         title: 'Turbidity', unit: '%', decimals: 1, color: const Color(0xFF8B5CF6),
@@ -97,11 +134,19 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Turbid', Color(0xFFF59E0B)),
           _Zone('Highly', Color(0xFFEF4444)),
         ],
-        zoneOf: (v) => v <= FirmwareSpec.turbidityClearMax
-            ? 0
-            : (v <= FirmwareSpec.turbiditySlightlyMax
-                ? 1
-                : (v <= FirmwareSpec.turbidityTurbidMax ? 2 : 3)),
+        // The standard reads "Clear: 0 -< 19.94%", so 19.94 is already
+        // Slightly Turbid and that first cut is STRICT. The other two
+        // are the TOP of their band, so they stay inclusive. This
+        // matches TurbidityCalibration::statusOf in the firmware.
+        bands: const MetricBands(
+          column: 'turbidity',
+          cuts: [
+            FirmwareSpec.turbidityClearMax,
+            FirmwareSpec.turbiditySlightlyMax,
+            FirmwareSpec.turbidityTurbidMax,
+          ],
+          strict: [true, false, false],
+        ),
       ),
       _MetricSpec(
         title: 'Water Temperature', unit: '°C', decimals: 1, color: AppColors.primary,
@@ -112,9 +157,11 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Optimal', Color(0xFF22C55E)),
           _Zone('Warm', Color(0xFFEF4444)),
         ],
-        zoneOf: (v) => v < FirmwareSpec.waterTempSafeMinC
-            ? 0
-            : (v <= FirmwareSpec.waterTempSafeMaxC ? 1 : 2),
+        bands: const MetricBands(
+          column: 'water_temp_c',
+          cuts: [FirmwareSpec.waterTempSafeMinC, FirmwareSpec.waterTempSafeMaxC],
+          strict: [true, false],
+        ),
       ),
       _MetricSpec(
         title: 'Housing Temperature', unit: '°C', decimals: 1,
@@ -128,19 +175,25 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Cooling', Color(0xFFF59E0B)),
           _Zone('Fan max', Color(0xFFEF4444)),
         ],
-        zoneOf: (v) => v < FirmwareSpec.coolingStartC
-            ? 0
-            : (v < FirmwareSpec.coolingMaxC ? 1 : 2),
+        bands: const MetricBands(
+          column: 'ambient_temp_c',
+          cuts: [FirmwareSpec.coolingStartC, FirmwareSpec.coolingMaxC],
+          strict: [true, true],
+        ),
       ),
     ];
+  }
 
+  Widget _buildBody(BuildContext context, LocalAnalyticsProvider analytics,
+      List<_MetricSpec> metrics) {
     return Container(
       color: AppColors.background,
       child: SafeArea(
         child: FadeIn(
           child: RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () => analytics.fetchHistory(hoursBack: _hoursBack),
+            onRefresh: () =>
+                analytics.fetchHistory(hoursBack: _hoursBack, bands: _bands),
             child: CustomScrollView(
               slivers: [
                 SliverPersistentHeader(
@@ -157,7 +210,9 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
                   sliver: SliverList.list(children: [
                     _RangeSelector(hoursBack: _hoursBack, onChanged: _changeRange),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 12),
+                    _SourceBanner(analytics: analytics),
+                    const SizedBox(height: 8),
                     if (analytics.isLoading)
                       const Padding(
                           padding: EdgeInsets.all(40),
@@ -173,7 +228,9 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
                             Padding(
                               padding: const EdgeInsets.only(bottom: 18),
                               child: _MetricAnalyticsCard(
-                                  history: analytics.history, spec: m),
+                                  history: analytics.history,
+                                  spec: m,
+                                  serverCounts: analytics.zoneCounts[m.bands.column]),
                             ),
                         ],
                         from: const Offset(0, 0.08),
@@ -206,11 +263,15 @@ class _MetricSpec {
   final String assetIcon;
   final double? Function(SensorHistoryPoint) select;
   final List<_Zone> zones;
-  final int Function(double) zoneOf;
+
+  /// Boundaries as data, so the exact same numbers can be sent to the
+  /// `readings_zone_counts` SQL function. See [MetricBands].
+  final MetricBands bands;
+
   const _MetricSpec({
     required this.title, required this.unit, required this.decimals,
     required this.color, required this.icon, required this.assetIcon, required this.select,
-    required this.zones, required this.zoneOf,
+    required this.zones, required this.bands,
   });
 }
 
@@ -227,24 +288,35 @@ class _EmptyState extends StatelessWidget {
       child: const Column(children: [
         Icon(LucideIcons.chartColumnBig, color: AppColors.textMuted, size: 40),
         SizedBox(height: 12),
-        Text('No history yet', style: TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.w700)),
+        Text('No readings in this range', style: TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.w700)),
         SizedBox(height: 4),
-        Text('Readings are logged automatically about once a minute while connected', textAlign: TextAlign.center, style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+        Text('Your device records continuously once it is online. Try a wider range, or ALL.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
       ]),
     );
   }
 }
 
 class _RangeSelector extends StatelessWidget {
-  final int hoursBack;
-  final ValueChanged<int> onChanged;
+  final int? hoursBack;
+  final ValueChanged<int?> onChanged;
   const _RangeSelector({required this.hoursBack, required this.onChanged});
 
-  static const _ranges = [(label: '24H', hours: 24), (label: '7D', hours: 168), (label: '30D', hours: 720)];
+  // `All` has no cutoff — it reads the device's entire history out of
+  // the readings table, not just a trailing window.
+  static const _ranges = <({String label, int? hours})>[
+    (label: '24H', hours: 24),
+    (label: '7D', hours: 168),
+    (label: '30D', hours: 720),
+    (label: 'ALL', hours: null),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    // Scrollable: a fourth chip takes the row close to the edge on a
+    // narrow phone, and at large text scales past it.
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
       children: _ranges.map((r) {
         final selected = r.hours == hoursBack;
         return Padding(
@@ -257,7 +329,7 @@ class _RangeSelector extends StatelessWidget {
             child: AnimatedContainer(
               duration: AppMotion.normal,
               curve: AppMotion.smooth,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+              padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 11),
               decoration: BoxDecoration(
                 color: selected ? AppColors.primary : AppColors.clayFill,
                 borderRadius: BorderRadius.circular(AppRadius.chip),
@@ -276,6 +348,79 @@ class _RangeSelector extends StatelessWidget {
           ),
         );
       }).toList(),
+      ),
+    );
+  }
+}
+
+/// One line under the range chips saying where the charted readings
+/// came from and how many there are.
+///
+/// It matters because the two sources are not equivalent: the cloud
+/// holds every reading the device ever took, the local fallback holds
+/// at most one a minute from while this phone was open. Without this
+/// line a thin local chart is indistinguishable from a quiet device.
+class _SourceBanner extends StatelessWidget {
+  final LocalAnalyticsProvider analytics;
+  const _SourceBanner({required this.analytics});
+
+  @override
+  Widget build(BuildContext context) {
+    if (analytics.isLoading) return const SizedBox.shrink();
+
+    final rows = analytics.history.length;
+    final isLocal = analytics.source == HistorySource.local;
+
+    final span = rows >= 2
+        ? ChartDate.range(
+            analytics.history.first.recordedAt, analytics.history.last.recordedAt)
+        : (rows == 1 ? ChartDate.stamp(analytics.history.first.recordedAt) : null);
+
+    final parts = <String>[
+      '${_grouped(rows)} reading${rows == 1 ? '' : 's'}',
+      if (span != null) span,
+    ];
+
+    final warn = isLocal || analytics.truncated;
+    final color = warn ? const Color(0xFFB45309) : AppColors.textMuted;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          isLocal ? LucideIcons.cloudOff : LucideIcons.database,
+          size: 13,
+          color: color,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                parts.join('  ·  '),
+                style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600),
+              ),
+              if (isLocal)
+                Text(
+                  analytics.diagnosis?.summary ??
+                      "Showing this phone's local log — the cloud history is unavailable.",
+                  style: TextStyle(fontSize: 10.5, color: color),
+                ),
+              if (isLocal && analytics.diagnosis?.fix != null)
+                Text(
+                  analytics.diagnosis!.fix!,
+                  style: const TextStyle(fontSize: 10.5, color: AppColors.textMuted),
+                ),
+              if (analytics.truncated)
+                Text(
+                  'Only the most recent ${_grouped(LocalAnalyticsProvider.maxPoints)} readings in this range were loaded.',
+                  style: TextStyle(fontSize: 10.5, color: color),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -285,20 +430,45 @@ class _RangeSelector extends StatelessWidget {
 class _MetricAnalyticsCard extends StatelessWidget {
   final List<SensorHistoryPoint> history;
   final _MetricSpec spec;
-  const _MetricAnalyticsCard({required this.history, required this.spec});
+
+  /// Zone counts the database computed over the whole window, or null
+  /// when the raw path ran and the card must count for itself.
+  final List<int>? serverCounts;
+
+  const _MetricAnalyticsCard({
+    required this.history,
+    required this.spec,
+    this.serverCounts,
+  });
 
   @override
   Widget build(BuildContext context) {
     final values = <double>[];
+    final samples = <TrendSample>[];
     for (final p in history) {
       final v = spec.select(p);
-      if (v != null) values.add(v);
+      if (v == null) continue;
+      values.add(v);
+      samples.add(TrendSample(p.recordedAt, v));
     }
 
-    final counts = List<int>.filled(spec.zones.length, 0);
-    for (final v in values) {
-      counts[spec.zoneOf(v).clamp(0, spec.zones.length - 1)]++;
+    // Thinned for painting only. The counts below still come from
+    // every raw reading, so the distribution stays exact however long
+    // the window is.
+    final series = TrendSeries.build(samples);
+
+    // Exact counts over every reading in the window when the database
+    // did the counting; otherwise count what was transferred. Both use
+    // spec.bands, so the two agree on where every boundary falls.
+    List<int> countLocally() {
+      final c = List<int>.filled(spec.zones.length, 0);
+      for (final v in values) {
+        c[spec.bands.zoneOf(v).clamp(0, spec.zones.length - 1)]++;
+      }
+      return c;
     }
+
+    final counts = serverCounts ?? countLocally();
     final total = counts.fold<int>(0, (a, b) => a + b);
     final latest = values.isNotEmpty ? values.last : null;
 
@@ -337,19 +507,37 @@ class _MetricAnalyticsCard extends StatelessWidget {
           ),
           const SizedBox(height: 18),
 
-          const _ChartLabel('Trend'),
+          Row(
+            children: [
+              const _ChartLabel('Trend'),
+              const Spacer(),
+              if (series.start != null && series.end != null)
+                Text(
+                  series.rawCount >= 2
+                      ? ChartDate.range(series.start!, series.end!)
+                      : ChartDate.stamp(series.start!),
+                  style: const TextStyle(
+                      fontSize: 9.5, color: AppColors.textMuted, fontWeight: FontWeight.w600),
+                ),
+            ],
+          ),
           const SizedBox(height: 8),
           _ClayWell(
-            height: 160,
+            // Taller than the other two wells: this one now carries a
+            // dated x-axis under the plot.
+            height: 184,
             // The ribbon draws itself left-to-right on first paint, so
             // the trend is read as a trend rather than appearing whole.
-            child: values.length < 2
+            child: series.samples.length < 2
                 ? const _NoData()
                 : DrawIn(
                     duration: const Duration(milliseconds: 1100),
                     builder: (context, t) => CustomPaint(
                       painter: _Area3DPainter(
-                          values: values, color: spec.color, progress: t),
+                          series: series,
+                          color: spec.color,
+                          decimals: spec.decimals,
+                          progress: t),
                     ),
                   ),
           ),
@@ -634,29 +822,70 @@ class _Pie3DPainter extends CustomPainter {
 }
 
 /// 3D area ribbon — the trend line extruded back into depth, with a front
-/// wall and a lit top ribbon.
+/// wall and a lit top ribbon, drawn against a dated time axis.
+///
+/// X is *time*, not list position. Plotting by index made an outage
+/// look like a normal step between readings; now a gap in the record
+/// shows as a gap, and the ticks below say which days and hours the
+/// curve covers.
 class _Area3DPainter extends CustomPainter {
-  final List<double> values;
+  final TrendSeries series;
   final Color color;
+  final int decimals;
 
   /// 0 → 1 draw-in progress: the ribbon is revealed left-to-right, so
   /// the trend is traced out in time order the way it was recorded.
   final double progress;
 
-  _Area3DPainter({required this.values, required this.color, this.progress = 1.0});
+  _Area3DPainter({
+    required this.series,
+    required this.color,
+    this.decimals = 1,
+    this.progress = 1.0,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (values.length < 2 || progress <= 0) return;
+    final pts = series.samples;
+    if (pts.length < 2 || progress <= 0) return;
     const depthX = 14.0, depthY = 12.0;
-    const topPad = depthY + 6, botPad = 10.0;
-    final baseY = size.height - botPad;
+    // The bottom strip belongs to the date ticks.
+    const topPad = depthY + 6, axisH = 26.0;
+    final baseY = size.height - axisH;
     final usableH = baseY - topPad;
     final usableW = size.width - depthX;
 
-    final minV = values.reduce(math.min);
-    final maxV = values.reduce(math.max);
+    final minV = series.minV;
+    final maxV = series.maxV;
     final span = (maxV - minV).abs() < 1e-9 ? 1.0 : (maxV - minV);
+
+    final t0 = pts.first.t.millisecondsSinceEpoch;
+    final tSpan = pts.last.t.millisecondsSinceEpoch - t0;
+
+    double xAt(DateTime t) => tSpan <= 0
+        ? 0.0
+        : usableW * (t.millisecondsSinceEpoch - t0) / tSpan;
+
+    // ── dated axis, drawn first so the ribbon sits over the grid ──
+    final ticks = series.axisTicks(4);
+    final gridPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.05)
+      ..strokeWidth = 1;
+    canvas.drawLine(
+        Offset(0, baseY + 0.5), Offset(size.width, baseY + 0.5), gridPaint);
+
+    for (int i = 0; i < ticks.length; i++) {
+      final x = xAt(ticks[i]);
+      canvas.drawLine(Offset(x, topPad - depthY), Offset(x, baseY), gridPaint);
+
+      final tl = _label(ChartDate.tick(ticks[i], series.spanSeconds),
+          size: 8.5, color: AppColors.textMuted, weight: FontWeight.w600);
+      // Nudge the end labels inward so neither runs off the well.
+      double lx = x - tl.width / 2;
+      if (i == 0) lx = math.max(0, lx);
+      if (i == ticks.length - 1) lx = math.min(size.width - tl.width, lx);
+      tl.paint(canvas, Offset(lx, baseY + 5));
+    }
 
     // Reveal by clipping rather than by shortening the paths: the
     // geometry below is computed once, at its final shape, so the line
@@ -667,18 +896,16 @@ class _Area3DPainter extends CustomPainter {
     }
 
     Offset front(int i) {
-      final x = usableW * i / (values.length - 1);
-      final y = baseY - ((values[i] - minV) / span) * usableH;
-      return Offset(x, y);
+      final y = baseY - ((pts[i].v - minV) / span) * usableH;
+      return Offset(xAt(pts[i].t), y);
     }
     Offset back(int i) => front(i).translate(depthX, -depthY);
-
     // front wall (down to baseline)
     final wall = Path()..moveTo(front(0).dx, front(0).dy);
-    for (int i = 1; i < values.length; i++) {
+    for (int i = 1; i < pts.length; i++) {
       wall.lineTo(front(i).dx, front(i).dy);
     }
-    wall..lineTo(front(values.length - 1).dx, baseY)..lineTo(front(0).dx, baseY)..close();
+    wall..lineTo(front(pts.length - 1).dx, baseY)..lineTo(front(0).dx, baseY)..close();
     canvas.drawPath(wall, Paint()..shader = LinearGradient(
       begin: Alignment.topCenter, end: Alignment.bottomCenter,
       colors: [color.withValues(alpha: 0.55), color.withValues(alpha: 0.12)],
@@ -686,10 +913,10 @@ class _Area3DPainter extends CustomPainter {
 
     // top ribbon (front edge → back edge)
     final ribbon = Path()..moveTo(front(0).dx, front(0).dy);
-    for (int i = 1; i < values.length; i++) {
+    for (int i = 1; i < pts.length; i++) {
       ribbon.lineTo(front(i).dx, front(i).dy);
     }
-    for (int i = values.length - 1; i >= 0; i--) {
+    for (int i = pts.length - 1; i >= 0; i--) {
       ribbon.lineTo(back(i).dx, back(i).dy);
     }
     ribbon.close();
@@ -697,13 +924,13 @@ class _Area3DPainter extends CustomPainter {
 
     // back edge + front edge strokes
     final backStroke = Path()..moveTo(back(0).dx, back(0).dy);
-    for (int i = 1; i < values.length; i++) {
+    for (int i = 1; i < pts.length; i++) {
       backStroke.lineTo(back(i).dx, back(i).dy);
     }
     canvas.drawPath(backStroke, Paint()..color = _darken(color, 0.1)..style = PaintingStyle.stroke..strokeWidth = 1.5);
 
     final frontStroke = Path()..moveTo(front(0).dx, front(0).dy);
-    for (int i = 1; i < values.length; i++) {
+    for (int i = 1; i < pts.length; i++) {
       frontStroke.lineTo(front(i).dx, front(i).dy);
     }
     canvas.drawPath(frontStroke, Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 2.5);
@@ -712,13 +939,16 @@ class _Area3DPainter extends CustomPainter {
 
     // min / max guide labels — outside the clip so they stay legible
     // for the whole draw-in.
-    final maxL = _label(maxV.toStringAsFixed(1), size: 9, color: AppColors.textMuted);
+    final maxL = _label(maxV.toStringAsFixed(decimals), size: 9, color: AppColors.textMuted);
     maxL.paint(canvas, const Offset(0, topPad - depthY));
-    final minL = _label(minV.toStringAsFixed(1), size: 9, color: AppColors.textMuted);
+    final minL = _label(minV.toStringAsFixed(decimals), size: 9, color: AppColors.textMuted);
     minL.paint(canvas, Offset(0, baseY - minL.height));
   }
 
   @override
   bool shouldRepaint(covariant _Area3DPainter old) =>
-      old.values != values || old.color != color || old.progress != progress;
+      !identical(old.series, series) ||
+      old.color != color ||
+      old.decimals != decimals ||
+      old.progress != progress;
 }

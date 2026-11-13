@@ -30,7 +30,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'crx_pulse_local.db');
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE feeding_schedules (
@@ -51,6 +51,7 @@ class LocalDb {
           )
         ''');
         await _createSensorHistoryTable(db);
+        await _createReadingCacheTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Existing installs (version 1) never had sensor_history -
@@ -58,6 +59,9 @@ class LocalDb {
         // whose data should survive the upgrade untouched.
         if (oldVersion < 2) {
           await _createSensorHistoryTable(db);
+        }
+        if (oldVersion < 3) {
+          await _createReadingCacheTable(db);
         }
       },
     );
@@ -80,5 +84,31 @@ class LocalDb {
     // Analytics queries filter/sort by time constantly - this index
     // keeps that fast even once history grows to thousands of rows.
     await db.execute('CREATE INDEX idx_sensor_history_recorded_at ON sensor_history(recorded_at)');
+  }
+
+  /// The last reading the device sent, kept so the dashboard has
+  /// something to draw the instant it opens.
+  ///
+  /// Exactly one row, id = 1, replaced in place. This is a cache, not
+  /// history - `sensor_history` is the history, and it only samples
+  /// once a minute. Separate table rather than "newest row of
+  /// sensor_history" because the two have different jobs: this one must
+  /// hold the very latest values even between history samples, and
+  /// reading it must be a single primary-key lookup on app start.
+  Future<void> _createReadingCacheTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE reading_cache (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        ph REAL,
+        ammonia REAL,
+        turbidity REAL,
+        turbidity_status TEXT,
+        water_temp_c REAL,
+        ambient_temp_c REAL,
+        fan_active INTEGER,
+        fan_percent INTEGER,
+        recorded_at TEXT NOT NULL
+      )
+    ''');
   }
 }

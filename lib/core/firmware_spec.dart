@@ -76,29 +76,61 @@ class FirmwareSpec {
   // ───────────────────────── turbidity ─────────────────────────
   // V_CLEAR / V_HIGH and the three status thresholds. Note the
   // inversion: a MORE turbid sample reads a LOWER voltage.
-  static const double turbidityVClear = 1.3646; // 0 %
-  static const double turbidityVHigh = 1.1916; // 100 %
-  static const double turbidityT1 = 1.33015; // Clear -> Slightly Turbid
-  static const double turbidityT2 = 1.28065; // Slightly Turbid -> Turbid
-  static const double turbidityT3 = 1.22865; // Turbid -> Highly Turbid
+  // ---- Calibration curve, revised 2026-11-08 ----
+  //
+  // Mirrors TurbidityCalibration in crx_pulse.ino exactly. Two anchors,
+  // measured against the tank rather than bench samples:
+  //
+  //   1.770 V ->   0 %   clear water
+  //   1.724 V -> 100 %   fully turbid
+  //
+  // The whole scale inside 46 mV. This supersedes the earlier
+  // five-level bench set (1.812 V down to 0.967 V), which put clear
+  // tank water at ~41 % "Slightly Turbid".
+  //
+  // Nothing in the app converts volts in the live path — the device
+  // sends the percentage. This is kept so calibration_test.dart can
+  // catch the app and the firmware drifting apart.
+  static const List<double> turbidityCurveVolts = [1.770, 1.724];
+  static const List<double> turbidityCurvePercent = [0.0, 100.0];
 
-  /// The firmware's own formula, so the band edges below are derived
-  /// from the calibration rather than typed in by hand.
+  static const double turbidityVClear = 1.770; // 0 %
+  static const double turbidityVHigh = 1.724; // 100 %
+
+  /// The firmware's own curve, so the app and the device agree on what
+  /// a voltage means.
   static double turbidityPercentOf(double volts) {
-    final pct =
-        ((turbidityVClear - volts) / (turbidityVClear - turbidityVHigh)) * 100.0;
-    return pct.clamp(0.0, 100.0);
+    if (volts >= turbidityCurveVolts.first) return 0.0;
+    if (volts <= turbidityCurveVolts.last) return 100.0;
+    for (var i = 0; i < turbidityCurveVolts.length - 1; i++) {
+      final vHi = turbidityCurveVolts[i];
+      final vLo = turbidityCurveVolts[i + 1];
+      if (volts <= vHi && volts >= vLo) {
+        return turbidityCurvePercent[i] +
+            (vHi - volts) *
+                (turbidityCurvePercent[i + 1] - turbidityCurvePercent[i]) /
+                (vHi - vLo);
+      }
+    }
+    return 100.0;
   }
 
   /// Band edges as PERCENT — which is what `readings.turbidity` holds.
-  /// Works out to 19.9 / 48.5 / 78.6 %.
-  static final double turbidityClearMax = turbidityPercentOf(turbidityT1);
-  static final double turbiditySlightlyMax = turbidityPercentOf(turbidityT2);
-  static final double turbidityTurbidMax = turbidityPercentOf(turbidityT3);
+  ///
+  /// Stated directly rather than derived from voltage thresholds. The
+  /// firmware now decides the band from the percentage too, so the two
+  /// cannot drift apart the way they could when one was computed from
+  /// volts and the other from percent.
+  static const double turbidityClearMax = 19.94;
+  static const double turbiditySlightlyMax = 48.53;
+  static const double turbidityTurbidMax = 78.58;
 
   /// The firmware's four status words, from a percentage.
+  ///
+  /// Clear is BELOW turbidityClearMax, not at-or-below: the standard
+  /// reads "Clear: 0 -< 19.94%", so 19.94 itself is Slightly Turbid.
   static String turbidityStatusOf(double percent) {
-    if (percent <= turbidityClearMax) return 'Clear';
+    if (percent < turbidityClearMax) return 'Clear';
     if (percent <= turbiditySlightlyMax) return 'Slightly Turbid';
     if (percent <= turbidityTurbidMax) return 'Turbid';
     return 'Highly Turbid';
@@ -113,9 +145,19 @@ class FirmwareSpec {
   static const double ammoniaSafeMax = 0.25;
   static const double ammoniaWarningMax = 0.50;
 
-  /// Top of the MQ-137's calibrated span (AMMONIA_C2). The firmware
-  /// clamps here rather than extrapolating, so the app will never
-  /// receive a value above it.
+  /// Top of the MQ-137's calibrated span (AmmoniaConfig::C2).
+  ///
+  /// The firmware clamps to this rather than extrapolating, so the app
+  /// never receives a value above it — and a reported 0.53 may mean
+  /// "at least 0.53", not exactly 0.53. The sensor's reading is also
+  /// clamped UP to 0.00 at the bottom, so `ammonia` is never null for
+  /// an out-of-band reading any more; it used to arrive as null with
+  /// ammonia_valid false, which the dashboard showed as "Not
+  /// Connected".
+  ///
+  /// The reconstructed sensor voltage, which is what distinguishes a
+  /// genuine 0.53 from a clamped one, is not in `readings` — it is on
+  /// the LCD and in the device log console.
   static const double ammoniaCalibratedMax = 0.53;
 
   static const String ammoniaUnit = ' mg/L';
@@ -230,6 +272,20 @@ class FirmwareSpec {
   // here so every screen uses one definition.
   static const double phSafeMin = 6.5;
   static const double phSafeMax = 8.5;
+
+  // ---- The device's 3-point calibration, for reference ----
+  //
+  // The app never computes pH (the device sends it), but these record
+  // what the reading is anchored to, measured 2026-11-06. The buffers
+  // are 6.78 / 4.05 / 9.18, NOT 7.00 / 4.00 — the firmware's formula
+  // used to assume 7.00 and 4.00, which is why readings sat about a
+  // full unit high at neutral.
+  static const double phBufferNeutral = 6.78;
+  static const double phBufferAcid = 4.05;
+  static const double phBufferBase = 9.18; // standard quoted as 9.18-9.23
+  static const double phVoltNeutral = 1.7567;
+  static const double phVoltAcid = 2.3891;
+  static const double phVoltBase = 1.2754;
   static bool phIsSafe(double ph) => ph >= phSafeMin && ph <= phSafeMax;
 
   static const double waterTempSafeMinC = 20.0;
