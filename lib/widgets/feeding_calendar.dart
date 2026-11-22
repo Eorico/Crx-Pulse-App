@@ -93,6 +93,13 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
 
   bool _isPast(String date) => date.compareTo(_today) < 0;
 
+  bool get _selectionIsContiguous {
+    if (_selected.isEmpty) return false;
+    final first = _parseDay(_selected.first);
+    final last = _parseDay(_selected.last);
+    return _selected.length == last.difference(first).inDays + 1;
+  }
+
   static DateTime _parseDay(String date) {
     final parts = date.split('-');
     return DateTime.utc(
@@ -254,17 +261,20 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
           _quickChip(
             key: const Key('feeding-quick-today'),
             label: 'Today',
-            days: 1,
+            offsets: const [0],
+            mode: FeedingCalendarMode.single,
           ),
           _quickChip(
             key: const Key('feeding-quick-tomorrow'),
             label: 'Tomorrow',
-            days: 2,
+            offsets: const [1],
+            mode: FeedingCalendarMode.single,
           ),
           _quickChip(
             key: const Key('feeding-quick-next-7'),
             label: 'Next 7 days',
-            days: 7,
+            offsets: const [0, 1, 2, 3, 4, 5, 6],
+            mode: FeedingCalendarMode.range,
           ),
         ],
       ),
@@ -274,12 +284,13 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
   Widget _quickChip({
     required Key key,
     required String label,
-    required int days,
+    required List<int> offsets,
+    required FeedingCalendarMode mode,
   }) {
     return ActionChip(
       key: key,
       label: Text(label),
-      onPressed: () => _applyQuickPick(days),
+      onPressed: () => _applyQuickPick(offsets, mode),
       backgroundColor: AppColors.primary.withValues(alpha: 0.12),
       side: BorderSide.none,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -294,27 +305,24 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     );
   }
 
-  void _applyQuickPick(int days) {
+  void _applyQuickPick(List<int> offsets, FeedingCalendarMode mode) {
     final base = _parseDay(_today);
-    final selectable = <String>[
-      for (var offset = 0; offset < days; offset++)
-        _formatDay(base.add(Duration(days: offset))),
-    ].where((date) => !_isPast(date)).toList();
-    if (selectable.isEmpty) return;
+    final dates = offsets
+        .map((offset) => _formatDay(base.add(Duration(days: offset))))
+        .where((date) => !_isPast(date))
+        .toList();
+    if (dates.isEmpty) return;
 
     setState(() {
-      if (days == 7) {
-        _mode = FeedingCalendarMode.range;
-        _selected = selectable;
-      } else {
-        _mode = FeedingCalendarMode.single;
-        _selected = [selectable.last];
-      }
+      _mode = mode;
+      _selected = dates;
       _rangeStart = null;
     });
 
-    final first = _parseDay(selectable.first);
-    final targetPage = _pageOf(first.year, first.month);
+    final target = _parseDay(
+      mode == FeedingCalendarMode.single ? dates.last : dates.first,
+    );
+    final targetPage = _pageOf(target.year, target.month);
     if (targetPage != _page) {
       _pages.animateToPage(
         targetPage,
@@ -435,7 +443,7 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
                     verticalPadding -
                     rowGap * (weekCount - 1)) /
                 weekCount)
-            .clamp(32.0, 46.0)
+            .clamp(28.0, 46.0)
             .toDouble();
 
         final cells = <Widget>[
@@ -465,7 +473,10 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
 
         return Center(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 18,
+              vertical: verticalPadding / 2,
+            ),
             child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
           ),
         );
@@ -475,10 +486,10 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
 
   BoxDecoration _dayDecoration(String date, bool past, bool selected) {
     if (selected) {
-      if (_mode == FeedingCalendarMode.single) {
+      if (_mode == FeedingCalendarMode.single || !_selectionIsContiguous) {
         return BoxDecoration(
           color: AppColors.primary,
-          borderRadius: BorderRadius.circular(21),
+          borderRadius: BorderRadius.circular(AppRadius.chip),
           boxShadow: AppShadows.claySoft,
         );
       }
@@ -491,13 +502,13 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
             : AppColors.primary.withValues(alpha: 0.16),
         borderRadius: endpoint
             ? first && last
-                ? BorderRadius.circular(21)
+                ? BorderRadius.circular(AppRadius.chip)
                 : first
                     ? const BorderRadius.horizontal(
-                        left: Radius.circular(21),
+                        left: Radius.circular(AppRadius.chip),
                       )
                     : const BorderRadius.horizontal(
-                        right: Radius.circular(21),
+                        right: Radius.circular(AppRadius.chip),
                       )
             : BorderRadius.zero,
         boxShadow: endpoint ? AppShadows.claySoft : null,
@@ -508,7 +519,7 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     }
     return BoxDecoration(
       color: AppColors.surface,
-      borderRadius: BorderRadius.circular(21),
+      borderRadius: BorderRadius.circular(AppRadius.chip),
       boxShadow: AppShadows.claySoft,
     );
   }
@@ -517,11 +528,12 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     final past = _isPast(date);
     final selected = _selected.contains(date);
     final today = date == _today;
-    final endpoint = selected &&
+    final ribbon = selected &&
         _mode != FeedingCalendarMode.single &&
+        _selectionIsContiguous;
+    final endpoint = ribbon &&
         (date == _selected.first || date == _selected.last);
-    final solid = selected &&
-        (_mode == FeedingCalendarMode.single || endpoint);
+    final solid = selected && (!ribbon || endpoint);
 
     final Color textColor;
     if (solid) {
@@ -543,7 +555,7 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
         selected: selected,
         child: Container(
           height: height,
-          margin: const EdgeInsets.symmetric(horizontal: 3),
+          margin: EdgeInsets.symmetric(horizontal: ribbon ? 0 : 3),
           alignment: Alignment.center,
           decoration: _dayDecoration(date, past, selected),
           child: Column(
