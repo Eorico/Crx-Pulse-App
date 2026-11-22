@@ -208,11 +208,11 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
             tooltip: 'Cancel',
             onPressed: () => Navigator.of(context).pop(),
           ),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                const Text(
                   'Select dates',
                   style: TextStyle(
                     color: AppColors.textPrimary,
@@ -220,12 +220,21 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                Text(
-                  'Device time (UTC+8)',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(AppRadius.chip),
+                  ),
+                  child: const Text(
+                    'DEVICE TIME · UTC+8',
+                    style: TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.6,
+                    ),
                   ),
                 ),
               ],
@@ -417,41 +426,114 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     final leadingBlanks = DateTime.utc(year, month, 1).weekday - 1;
     final daysInMonth = DateTime.utc(year, month + 1, 0).day;
 
-    final cells = <Widget>[
-      for (var i = 0; i < leadingBlanks; i++) const SizedBox(height: 42),
-      for (var day = 1; day <= daysInMonth; day++)
-        _buildDay(_formatDay(DateTime.utc(year, month, day)), day),
-    ];
-    while (cells.length % 7 != 0) {
-      cells.add(const SizedBox(height: 42));
-    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const verticalPadding = 12.0;
+        const rowGap = 4.0;
+        final weekCount = (leadingBlanks + daysInMonth + 6) ~/ 7;
+        final cellHeight = ((constraints.maxHeight -
+                    verticalPadding -
+                    rowGap * (weekCount - 1)) /
+                weekCount)
+            .clamp(32.0, 46.0)
+            .toDouble();
 
-    final weeks = <Widget>[];
-    for (var i = 0; i < cells.length; i += 7) {
-      if (i > 0) weeks.add(const SizedBox(height: 4));
-      weeks.add(
-        Row(
-          children: [
-            for (final cell in cells.skip(i).take(7)) Expanded(child: cell),
-          ],
-        ),
-      );
-    }
+        final cells = <Widget>[
+          for (var i = 0; i < leadingBlanks; i++) SizedBox(height: cellHeight),
+          for (var day = 1; day <= daysInMonth; day++)
+            _buildDay(
+              _formatDay(DateTime.utc(year, month, day)),
+              day,
+              cellHeight,
+            ),
+        ];
+        while (cells.length % 7 != 0) {
+          cells.add(SizedBox(height: cellHeight));
+        }
 
-    return Center(
-      child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-          child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
-        ),
-      ),
+        final weeks = <Widget>[];
+        for (var i = 0; i < cells.length; i += 7) {
+          if (i > 0) weeks.add(const SizedBox(height: rowGap));
+          weeks.add(
+            Row(
+              children: [
+                for (final cell in cells.skip(i).take(7)) Expanded(child: cell),
+              ],
+            ),
+          );
+        }
+
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+            child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildDay(String date, int day) {
+  BoxDecoration _dayDecoration(String date, bool past, bool selected) {
+    if (selected) {
+      if (_mode == FeedingCalendarMode.single) {
+        return BoxDecoration(
+          color: AppColors.primary,
+          borderRadius: BorderRadius.circular(21),
+          boxShadow: AppShadows.claySoft,
+        );
+      }
+      final first = date == _selected.first;
+      final last = date == _selected.last;
+      final endpoint = first || last;
+      return BoxDecoration(
+        color: endpoint
+            ? AppColors.primary
+            : AppColors.primary.withValues(alpha: 0.16),
+        borderRadius: endpoint
+            ? first && last
+                ? BorderRadius.circular(21)
+                : first
+                    ? const BorderRadius.horizontal(
+                        left: Radius.circular(21),
+                      )
+                    : const BorderRadius.horizontal(
+                        right: Radius.circular(21),
+                      )
+            : BorderRadius.zero,
+        boxShadow: endpoint ? AppShadows.claySoft : null,
+      );
+    }
+    if (past) {
+      return const BoxDecoration(color: AppColors.background);
+    }
+    return BoxDecoration(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(21),
+      boxShadow: AppShadows.claySoft,
+    );
+  }
+
+  Widget _buildDay(String date, int day, double height) {
     final past = _isPast(date);
     final selected = _selected.contains(date);
     final today = date == _today;
+    final endpoint = selected &&
+        _mode != FeedingCalendarMode.single &&
+        (date == _selected.first || date == _selected.last);
+    final solid = selected &&
+        (_mode == FeedingCalendarMode.single || endpoint);
+
+    final Color textColor;
+    if (solid) {
+      textColor = Colors.white;
+    } else if (selected) {
+      textColor = AppColors.primaryDark;
+    } else if (past) {
+      textColor = AppColors.textMuted;
+    } else {
+      textColor = AppColors.textPrimary;
+    }
+
     return PressableScale(
       key: Key('feeding-day-$date'),
       onTap: past ? null : () => _selectDay(date),
@@ -460,34 +542,36 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
         enabled: !past,
         selected: selected,
         child: Container(
-          height: 42,
+          height: height,
           margin: const EdgeInsets.symmetric(horizontal: 3),
           alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.primary
-                : past
-                    ? AppColors.background
-                    : AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.chip),
-            boxShadow: selected
-                ? AppShadows.clayPressed
-                : past
-                    ? null
-                    : AppShadows.claySoft,
-          ),
-          child: Text(
-            '$day',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: today || selected ? FontWeight.w800 : FontWeight.w600,
-              color: selected
-                  ? Colors.white
-                  : past
-                      ? AppColors.textMuted
-                      : AppColors.textPrimary,
-              decoration: today ? TextDecoration.underline : null,
-            ),
+          decoration: _dayDecoration(date, past, selected),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$day',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight:
+                      today || selected ? FontWeight.w800 : FontWeight.w600,
+                  color: textColor,
+                ),
+              ),
+              if (today)
+                KeyedSubtree(
+                  key: const Key('feeding-calendar-today-marker'),
+                  child: Container(
+                    width: 5,
+                    height: 5,
+                    margin: const EdgeInsets.only(top: 2),
+                    decoration: BoxDecoration(
+                      color: solid ? Colors.white : AppColors.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -508,12 +592,15 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            _selectionSummary(),
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+          KeyedSubtree(
+            key: const Key('feeding-calendar-summary'),
+            child: Text(
+              _selectionSummary(),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           const SizedBox(height: 10),

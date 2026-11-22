@@ -112,6 +112,48 @@ void main() {
       '2026-09-30', '2026-10-01', '2026-10-02',
     ]);
   });
+
+  testWidgets('empty selection shows a summary and disables Confirm',
+      (tester) async {
+    await harness.open(tester);
+
+    expect(find.byKey(const Key('feeding-calendar-summary')), findsOneWidget);
+    expect(find.text('No dates selected'), findsOneWidget);
+    expect(
+      tester
+          .widget<ElevatedButton>(
+            find.byKey(const Key('feeding-calendar-confirm')),
+          )
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('today marker appears only on the device-today cell',
+      (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.multiple);
+
+    expect(
+      find.byKey(const Key('feeding-calendar-today-marker')),
+      findsOneWidget,
+    );
+    final markerParent = find.ancestor(
+      of: find.byKey(const Key('feeding-calendar-today-marker')),
+      matching: find.byKey(const Key('feeding-day-2026-10-23')),
+    );
+    expect(markerParent, findsOneWidget);
+  });
+
+  testWidgets('range summary names the first and last date', (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.range);
+    await harness.tapDay(tester, '2026-10-24');
+    await harness.tapDay(tester, '2026-10-27');
+
+    expect(
+      find.text('4 days · 2026-10-24 – 2026-10-27'),
+      findsOneWidget,
+    );
+  });
 }
 
 /// Drives the real [showFeedingCalendar] entry point and captures what it
