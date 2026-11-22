@@ -1,0 +1,466 @@
+import 'package:flutter/material.dart';
+
+import '../core/feeding_schedule.dart';
+import '../core/theme.dart';
+import 'motion.dart';
+
+/// How a tap on a day changes the selection.
+enum FeedingCalendarMode { single, multiple, range }
+
+/// Opens the calendar as a full-screen dialog.
+///
+/// Returns the chosen device dates as sorted `YYYY-MM-DD` keys, or null when
+/// the user cancels. Dates are plain calendar days: no phone-local timezone
+/// conversion happens anywhere in the picker.
+Future<List<String>?> showFeedingCalendar(
+  BuildContext context, {
+  DateTime? now,
+  List<String> selected = const [],
+  FeedingCalendarMode initialMode = FeedingCalendarMode.single,
+}) {
+  return showDialog<List<String>>(
+    context: context,
+    barrierDismissible: false,
+    builder: (BuildContext context) => _FeedingCalendar(
+      now: now,
+      selected: selected,
+      initialMode: initialMode,
+    ),
+  );
+}
+
+class _FeedingCalendar extends StatefulWidget {
+  const _FeedingCalendar({
+    required this.now,
+    required this.selected,
+    required this.initialMode,
+  });
+
+  final DateTime? now;
+  final List<String> selected;
+  final FeedingCalendarMode initialMode;
+
+  @override
+  State<_FeedingCalendar> createState() => _FeedingCalendarState();
+}
+
+class _FeedingCalendarState extends State<_FeedingCalendar> {
+  static const _monthNames = <String>[
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+  static const _weekdays = <String>['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  late final String _today;
+  late final int _todayPage;
+  late final PageController _pages;
+  late FeedingCalendarMode _mode;
+  late List<String> _selected;
+  late int _page;
+  String? _rangeStart;
+
+  @override
+  void initState() {
+    super.initState();
+    _today = deviceTodayDate(now: widget.now);
+    final firstDay = _parseDay(_today);
+    _todayPage = _pageOf(firstDay.year, firstDay.month);
+    _page = _todayPage;
+    _pages = PageController(initialPage: _todayPage);
+    _mode = widget.initialMode;
+    _selected = widget.selected.where((date) => !_isPast(date)).toSet().toList()
+      ..sort();
+    _rangeStart = _mode == FeedingCalendarMode.range && _selected.isNotEmpty
+        ? _selected.first
+        : null;
+  }
+
+  @override
+  void dispose() {
+    _pages.dispose();
+    super.dispose();
+  }
+
+  bool _isPast(String date) => date.compareTo(_today) < 0;
+
+  static DateTime _parseDay(String date) {
+    final parts = date.split('-');
+    return DateTime.utc(
+      int.parse(parts[0]),
+      int.parse(parts[1]),
+      int.parse(parts[2]),
+    );
+  }
+
+  static String _formatDay(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  static int _pageOf(int year, int month) => (year - 2000) * 12 + month - 1;
+
+  static int _yearOf(int page) => 2000 + (page / 12).floor();
+
+  static int _monthOf(int page) => page - (_yearOf(page) - 2000) * 12 + 1;
+
+  List<String> _daysBetween(String first, String second) {
+    final a = _parseDay(first);
+    final b = _parseDay(second);
+    final from = a.isBefore(b) ? a : b;
+    final to = a.isBefore(b) ? b : a;
+    final days = <String>[];
+    for (
+      var day = from;
+      !day.isAfter(to);
+      day = day.add(const Duration(days: 1))
+    ) {
+      days.add(_formatDay(day));
+    }
+    return days;
+  }
+
+  void _selectDay(String date) {
+    if (_isPast(date)) return;
+    setState(() {
+      switch (_mode) {
+        case FeedingCalendarMode.single:
+          _selected = [date];
+        case FeedingCalendarMode.multiple:
+          _selected = _selected.contains(date)
+              ? _selected.where((d) => d != date).toList()
+              : [..._selected, date]..sort();
+        case FeedingCalendarMode.range:
+          final start = _rangeStart;
+          if (start == null) {
+            _rangeStart = date;
+            _selected = [date];
+          } else {
+            _selected = _daysBetween(start, date);
+            _rangeStart = null;
+          }
+      }
+    });
+  }
+
+  void _changeMode(FeedingCalendarMode mode) {
+    if (mode == _mode) return;
+    setState(() {
+      _mode = mode;
+      _rangeStart = mode == FeedingCalendarMode.range && _selected.isNotEmpty
+          ? _selected.first
+          : null;
+      if (mode == FeedingCalendarMode.single && _selected.length > 1) {
+        _selected = [_selected.first];
+      }
+    });
+  }
+
+  void _confirm(BuildContext context) {
+    final dates = _selected.toList()..sort();
+    Navigator.of(context).pop(dates);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog.fullscreen(
+      backgroundColor: AppColors.background,
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildHeader(context),
+            _buildModeSelector(),
+            _buildMonthBar(),
+            _buildWeekdayRow(),
+            Expanded(
+              child: PageView.builder(
+                controller: _pages,
+                onPageChanged: (page) => setState(() => _page = page),
+                itemBuilder: (context, page) => _buildMonth(page),
+              ),
+            ),
+            _buildFooter(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 6, 20, 0),
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('feeding-calendar-cancel'),
+            icon: const Icon(Icons.close, color: AppColors.textPrimary),
+            tooltip: 'Cancel',
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Select dates',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                Text(
+                  'Device time (UTC+8)',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeSelector() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+      child: Wrap(
+        spacing: 10,
+        children: [
+          for (final mode in FeedingCalendarMode.values)
+            ChoiceChip(
+              key: Key('feeding-mode-${mode.name}'),
+              label: Text(_modeLabel(mode)),
+              selected: _mode == mode,
+              showCheckmark: false,
+              backgroundColor: AppColors.surface,
+              selectedColor: AppColors.primary.withValues(alpha: 0.16),
+              side: BorderSide(
+                color: _mode == mode ? AppColors.primary : AppColors.border,
+              ),
+              labelStyle: TextStyle(
+                color:
+                    _mode == mode ? AppColors.primaryDark : AppColors.textSecondary,
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.chip),
+              ),
+              onSelected: (_) => _changeMode(mode),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _modeLabel(FeedingCalendarMode mode) => switch (mode) {
+        FeedingCalendarMode.single => 'Single',
+        FeedingCalendarMode.multiple => 'Multiple',
+        FeedingCalendarMode.range => 'Range',
+      };
+
+  Widget _buildMonthBar() {
+    final year = _yearOf(_page);
+    final month = _monthOf(_page);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: Row(
+        children: [
+          IconButton(
+            key: const Key('feeding-calendar-prev-month'),
+            icon: const Icon(Icons.chevron_left, color: AppColors.textPrimary),
+            tooltip: 'Previous month',
+            onPressed: _page <= _todayPage
+                ? null
+                : () => _pages.previousPage(
+                      duration: AppMotion.normal,
+                      curve: AppMotion.enter,
+                    ),
+          ),
+          Expanded(
+            child: Center(
+              child: Text(
+                '${_monthNames[month - 1]} $year',
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            key: const Key('feeding-calendar-next-month'),
+            icon: const Icon(Icons.chevron_right, color: AppColors.textPrimary),
+            tooltip: 'Next month',
+            onPressed: () => _pages.nextPage(
+              duration: AppMotion.normal,
+              curve: AppMotion.enter,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWeekdayRow() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+      child: Row(
+        children: [
+          for (final label in _weekdays)
+            Expanded(
+              child: Center(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMonth(int page) {
+    final year = _yearOf(page);
+    final month = _monthOf(page);
+    final leadingBlanks = DateTime.utc(year, month, 1).weekday - 1;
+    final daysInMonth = DateTime.utc(year, month + 1, 0).day;
+
+    final cells = <Widget>[
+      for (var i = 0; i < leadingBlanks; i++) const SizedBox(height: 42),
+      for (var day = 1; day <= daysInMonth; day++)
+        _buildDay(_formatDay(DateTime.utc(year, month, day)), day),
+    ];
+    while (cells.length % 7 != 0) {
+      cells.add(const SizedBox(height: 42));
+    }
+
+    final weeks = <Widget>[];
+    for (var i = 0; i < cells.length; i += 7) {
+      if (i > 0) weeks.add(const SizedBox(height: 4));
+      weeks.add(
+        Row(
+          children: [
+            for (final cell in cells.skip(i).take(7)) Expanded(child: cell),
+          ],
+        ),
+      );
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+        child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
+      ),
+    );
+  }
+
+  Widget _buildDay(String date, int day) {
+    final past = _isPast(date);
+    final selected = _selected.contains(date);
+    final today = date == _today;
+    return PressableScale(
+      key: Key('feeding-day-$date'),
+      onTap: past ? null : () => _selectDay(date),
+      child: Semantics(
+        label: date,
+        enabled: !past,
+        selected: selected,
+        child: Container(
+          height: 42,
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.primary
+                : past
+                    ? AppColors.background
+                    : AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.chip),
+            boxShadow: selected
+                ? AppShadows.clayPressed
+                : past
+                    ? null
+                    : AppShadows.claySoft,
+          ),
+          child: Text(
+            '$day',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: today || selected ? FontWeight.w800 : FontWeight.w600,
+              color: selected
+                  ? Colors.white
+                  : past
+                      ? AppColors.textMuted
+                      : AppColors.textPrimary,
+              decoration: today ? TextDecoration.underline : null,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFooter(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(AppRadius.card),
+        ),
+        boxShadow: AppShadows.claySoft,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            _selectionSummary(),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            key: const Key('feeding-calendar-confirm'),
+            onPressed: _selected.isEmpty ? null : () => _confirm(context),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _selectionSummary() {
+    if (_selected.isEmpty) return 'No dates selected';
+    if (_selected.length == 1) return '1 date selected · ${_selected.first}';
+    if (_mode == FeedingCalendarMode.range) {
+      return '${_selected.length} days · ${_selected.first} – ${_selected.last}';
+    }
+    return '${_selected.length} dates selected';
+  }
+}

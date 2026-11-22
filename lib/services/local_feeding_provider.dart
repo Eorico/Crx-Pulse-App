@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../core/feeding_schedule.dart';
 import '../core/firmware_spec.dart';
 
 /// A feeding schedule row in Supabase `schedules`. `grams` is one of the
@@ -13,13 +14,26 @@ class FeedingSchedule {
   final int grams;
   final int rotatorPwm;
   final bool active;
+
+  /// Device-local `YYYY-MM-DD`. Null is a legacy row the ESP32 fires
+  /// every day.
+  final String? feedDate;
+
+  /// The device this row belongs to. Null on older rows, which the active
+  /// device inherits.
+  final String? deviceId;
+
   const FeedingSchedule({
     required this.id,
     required this.time,
     required this.grams,
     required this.rotatorPwm,
     required this.active,
+    this.feedDate,
+    this.deviceId,
   });
+
+  bool get isDaily => feedDate == null;
 }
 
 /// Feeding — schedules and manual feeds — lives in Supabase so the ESP32
@@ -27,13 +41,27 @@ class FeedingSchedule {
 /// DEVICE from its NTP clock, so it works even when the app is closed;
 /// the app just manages the list and queues one-shot "feed now" commands.
 class LocalFeedingProvider extends ChangeNotifier {
-  final SupabaseClient _sb = Supabase.instance.client;
+  final SupabaseClient _sb;
+
+  LocalFeedingProvider({SupabaseClient? client})
+      : _sb = client ?? Supabase.instance.client;
 
   List<FeedingSchedule> schedules = [];
   bool isLoading = false;
   StreamSubscription<List<Map<String, dynamic>>>? _sub;
 
   String? get _uid => _sb.auth.currentUser?.id;
+
+  /// Rows for [deviceId] only. Rows with no device id predate the column and
+  /// are treated as belonging to whichever device is active. The stream
+  /// itself is scoped by user, not device, so the UI must call this before
+  /// showing or validating schedules.
+  List<FeedingSchedule> schedulesForDevice(String? deviceId) =>
+      deviceId == null
+          ? const []
+          : schedules
+              .where((s) => s.deviceId == null || s.deviceId == deviceId)
+              .toList();
 
   /// Named fetchSchedules() so the call site keeps working; it opens a
   /// live stream of this user's schedules.
@@ -47,7 +75,8 @@ class LocalFeedingProvider extends ChangeNotifier {
         .from('schedules')
         .stream(primaryKey: ['id'])
         .eq('user_id', uid)
-        .order('time')
+        .order('feed_date', ascending: true)
+        .order('time', ascending: true)
         .listen((rows) {
       schedules = rows.map((m) => FeedingSchedule(
             id: m['id'].toString(),
@@ -59,6 +88,8 @@ class LocalFeedingProvider extends ChangeNotifier {
             rotatorPwm: (m['rotator_pwm'] as num?)?.toInt() ??
                 FirmwareSpec.rotatorDefaultPwm,
             active: m['active'] as bool? ?? true,
+            feedDate: m['feed_date'] as String?,
+            deviceId: m['device_id'] as String?,
           )).toList();
       isLoading = false;
       notifyListeners();
@@ -81,6 +112,62 @@ class LocalFeedingProvider extends ChangeNotifier {
       'rotator_pwm': rotatorPwm,
       'active': true,
     });
+  }
+
+  /// Writes a batch of dated feeds, one `schedules` row per (date, time).
+  Future<void> createSchedules(String deviceId, List<FeedingDraft> drafts) async {
+    final uid = _uid;
+    if (uid == null) return;
+    final rows = feedingInsertRows(
+      deviceId: deviceId,
+      userId: uid,
+      drafts: drafts,
+    );
+    if (rows.isEmpty) return;
+    await _sb.from('schedules').insert(rows);
+  }
+
+  /// Replaces the rows of one date group with [edited]. [date] is the group's
+  /// date (null for the legacy every-day group), written to every row.
+  Future<void> updateScheduleGroup(
+    String deviceId,
+    String? date,
+    List<FeedingSchedule> original,
+    List<FeedingDraft> edited,
+  ) async {
+    final uid = _uid;
+    if (uid == null) return;
+    final plan = planGroupUpdate(
+      deviceId: deviceId,
+      userId: uid,
+      date: date,
+      original: original,
+      edited: edited,
+    );
+    // Removed rows must go before new ones: inserting a replacement at the
+    // same (date, time) first would briefly leave two rows for that slot.
+    // These PostgREST calls are separate requests, not a transaction: if a
+    // later one fails, earlier writes stay committed. Callers catch the
+    // error, report it and re-fetch, so the live list shows what actually
+    // landed rather than a partial write pretending to be complete.
+    if (plan.deleteIds.isNotEmpty) {
+      await _sb
+          .from('schedules')
+          .delete()
+          .inFilter('id', plan.deleteIds.toList());
+    }
+    for (final row in plan.updates) {
+      await _sb.from('schedules').update(row).eq('id', row['id']);
+    }
+    if (plan.inserts.isNotEmpty) {
+      await _sb.from('schedules').insert(plan.inserts);
+    }
+  }
+
+  /// Deletes a whole date group (or any other set of schedule ids).
+  Future<void> deleteSchedules(Set<String> ids) async {
+    if (ids.isEmpty) return;
+    await _sb.from('schedules').delete().inFilter('id', ids.toList());
   }
 
   Future<void> toggleSchedule(String id, bool active) async {
