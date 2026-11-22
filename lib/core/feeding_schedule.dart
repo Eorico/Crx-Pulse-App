@@ -96,3 +96,97 @@ String? firstConflict(
   }
   return null;
 }
+
+/// The three kinds of write needed to make one date group match its edits.
+class GroupUpdatePlan {
+  final List<Map<String, dynamic>> updates;
+  final List<Map<String, dynamic>> inserts;
+  final List<String> deleteIds;
+
+  const GroupUpdatePlan({
+    required this.updates,
+    required this.inserts,
+    required this.deleteIds,
+  });
+}
+
+/// Insert payloads for new feeds. A null draft date is a legacy every-day
+/// row; callers pass drafts for the dates they selected in the calendar.
+List<Map<String, dynamic>> feedingInsertRows({
+  required String deviceId,
+  required String userId,
+  required List<FeedingDraft> drafts,
+}) {
+  return [
+    for (final draft in drafts)
+      {
+        'device_id': deviceId,
+        'user_id': userId,
+        'feed_date': draft.feedDate,
+        'time': draft.time,
+        'grams': draft.grams,
+        'rotator_pwm': draft.rotatorPwm,
+        'active': true,
+      },
+  ];
+}
+
+/// Plans one group's writes. [date] is written verbatim: editing a legacy
+/// group keeps NULL, while converting it writes the chosen date on every
+/// row. Drafts without an id are new rows; saved ids absent from [edited]
+/// are removed.
+GroupUpdatePlan planGroupUpdate({
+  required String deviceId,
+  required String userId,
+  required String? date,
+  required List<FeedingSchedule> original,
+  required List<FeedingDraft> edited,
+}) {
+  final editedById = <String, FeedingDraft>{};
+  final newDrafts = <FeedingDraft>[];
+  for (final draft in edited) {
+    final id = draft.id;
+    if (id == null) {
+      newDrafts.add(draft);
+    } else {
+      editedById[id] = draft;
+    }
+  }
+
+  final updates = <Map<String, dynamic>>[];
+  for (final saved in original) {
+    final draft = editedById[saved.id];
+    if (draft == null) continue;
+    updates.add({
+      'id': saved.id,
+      'device_id': deviceId,
+      'user_id': userId,
+      'feed_date': date,
+      'time': draft.time,
+      'grams': draft.grams,
+      'rotator_pwm': draft.rotatorPwm,
+      'active': saved.active,
+    });
+  }
+
+  return GroupUpdatePlan(
+    updates: updates,
+    inserts: feedingInsertRows(
+      deviceId: deviceId,
+      userId: userId,
+      drafts: [
+        for (final draft in newDrafts)
+          FeedingDraft(
+            feedDate: date,
+            time: draft.time,
+            grams: draft.grams,
+            rotatorPwm: draft.rotatorPwm,
+          ),
+      ],
+    ),
+    deleteIds: original
+        .map((saved) => saved.id)
+        .where((id) => !editedById.containsKey(id))
+        .toList(),
+  );
+}
