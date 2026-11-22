@@ -65,6 +65,129 @@ void main() {
       '2026-10-27',
     ]);
   });
+
+  testWidgets('today quick pick replaces the existing selection', (tester) async {
+    await harness.open(tester,
+        mode: FeedingCalendarMode.multiple,
+        selected: const ['2026-10-24', '2026-10-25']);
+
+    await tester.tap(find.byKey(const Key('feeding-quick-today')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), ['2026-10-23']);
+  });
+
+  testWidgets('tomorrow quick pick selects only the next day', (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.multiple);
+
+    await tester.tap(find.byKey(const Key('feeding-quick-tomorrow')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), ['2026-10-24']);
+  });
+
+  testWidgets('next 7 days crosses the month boundary', (tester) async {
+    await harness.open(tester, now: DateTime.utc(2026, 10, 30, 16, 30));
+
+    await tester.tap(find.byKey(const Key('feeding-quick-next-7')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), [
+      '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03',
+      '2026-11-04', '2026-11-05', '2026-11-06',
+    ]);
+  });
+
+  testWidgets('range mode returns every day across a month boundary',
+      (tester) async {
+    await harness.open(tester,
+        now: DateTime.utc(2026, 9, 29, 16, 30),
+        mode: FeedingCalendarMode.range);
+    await harness.tapDay(tester, '2026-09-30');
+    await tester.tap(find.byKey(const Key('feeding-calendar-next-month')));
+    await tester.pumpAndSettle();
+    await harness.tapDay(tester, '2026-10-02');
+
+    expect(await harness.confirm(tester), [
+      '2026-09-30', '2026-10-01', '2026-10-02',
+    ]);
+  });
+
+  testWidgets('empty selection shows a summary and disables Confirm',
+      (tester) async {
+    await harness.open(tester);
+
+    expect(find.byKey(const Key('feeding-calendar-summary')), findsOneWidget);
+    expect(find.text('No dates selected'), findsOneWidget);
+    expect(
+      tester
+          .widget<ElevatedButton>(
+            find.byKey(const Key('feeding-calendar-confirm')),
+          )
+          .onPressed,
+      isNull,
+    );
+  });
+
+  testWidgets('today marker appears only on the device-today cell',
+      (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.multiple);
+
+    expect(
+      find.byKey(const Key('feeding-calendar-today-marker')),
+      findsOneWidget,
+    );
+    final markerParent = find.ancestor(
+      of: find.byKey(const Key('feeding-calendar-today-marker')),
+      matching: find.byKey(const Key('feeding-day-2026-10-23')),
+    );
+    expect(markerParent, findsOneWidget);
+  });
+
+  testWidgets('range summary names the first and last date', (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.range);
+    await harness.tapDay(tester, '2026-10-24');
+    await harness.tapDay(tester, '2026-10-27');
+
+    expect(
+      find.text('4 days · 2026-10-24 – 2026-10-27'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tomorrow quick pick jumps to the next month at a boundary',
+      (tester) async {
+    await harness.open(tester, now: DateTime.utc(2026, 10, 30, 16, 30));
+
+    await tester.tap(find.byKey(const Key('feeding-quick-tomorrow')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('November 2026'), findsOneWidget);
+    expect(await harness.confirm(tester), ['2026-11-01']);
+  });
+
+  testWidgets('mode control switches from single to multiple', (tester) async {
+    await harness.open(tester);
+
+    await tester.tap(find.byKey(const Key('feeding-mode-multiple')));
+    await tester.pumpAndSettle();
+    await harness.tapDay(tester, '2026-10-24');
+    await harness.tapDay(tester, '2026-10-25');
+
+    expect(await harness.confirm(tester), ['2026-10-24', '2026-10-25']);
+  });
+
+  testWidgets('calendar fits on a short viewport', (tester) async {
+    tester.view.physicalSize = const Size(800, 560);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await harness.open(tester, mode: FeedingCalendarMode.range);
+    await harness.tapDay(tester, '2026-10-27');
+
+    expect(tester.takeException(), isNull);
+  });
 }
 
 /// Drives the real [showFeedingCalendar] entry point and captures what it
@@ -74,6 +197,7 @@ class _CalendarHarness {
 
   Future<void> open(
     WidgetTester tester, {
+    DateTime? now,
     FeedingCalendarMode mode = FeedingCalendarMode.single,
     List<String> selected = const [],
   }) async {
@@ -87,7 +211,7 @@ class _CalendarHarness {
                 onPressed: () async {
                   result = await showFeedingCalendar(
                     context,
-                    now: DateTime.utc(2026, 10, 22, 16, 30),
+                    now: now ?? DateTime.utc(2026, 10, 22, 16, 30),
                     selected: selected,
                     initialMode: mode,
                   );
