@@ -146,6 +146,10 @@ class LocalFeedingProvider extends ChangeNotifier {
     );
     // Removed rows must go before new ones: inserting a replacement at the
     // same (date, time) first would briefly leave two rows for that slot.
+    // These PostgREST calls are separate requests, not a transaction: if a
+    // later one fails, earlier writes stay committed. Callers catch the
+    // error, report it and re-fetch, so the live list shows what actually
+    // landed rather than a partial write pretending to be complete.
     if (plan.deleteIds.isNotEmpty) {
       await _sb
           .from('schedules')

@@ -10,13 +10,15 @@ import 'package:crx_pulse/services/local_feeding_provider.dart';
 import 'package:crx_pulse/widgets/feeding_section.dart';
 
 void main() {
-  // Device dates are UTC+8 calendar days. These sit just after the fixture
-  // "today" so the calendar will let the tests select them.
-  const firstDate = '2026-11-24';
-  const secondDate = '2026-11-25';
-  const movedDate = '2026-11-26';
-  const thirdDate = '2026-11-27';
-  const fourthDate = '2026-11-28';
+  // Device dates are UTC+8 calendar days. Derive them from device "today" so
+  // the calendar never rejects them as the wall clock moves on.
+  final today = DateTime.parse(deviceTodayDate());
+  final firstDate = _futureDate(today, 2);
+  final secondDate = _futureDate(today, 3);
+  final movedDate = _futureDate(today, 4);
+  final thirdDate = _futureDate(today, 5);
+  final fourthDate = _futureDate(today, 6);
+  final convertDate = _futureDate(today, 7);
 
   setUpAll(() async {
     // Supabase's auth storage uses shared_preferences, which has no test
@@ -47,7 +49,7 @@ void main() {
     expect(find.text(firstDate), findsOneWidget);
     expect(find.text(secondDate), findsOneWidget);
     expect(find.text('Every day'), findsOneWidget);
-    expect(find.byKey(const Key('feeding-overview-group-$firstDate')),
+    expect(find.byKey(Key('feeding-overview-group-$firstDate')),
         findsOneWidget);
     expect(find.byKey(const Key('feeding-overview-group-every-day')),
         findsOneWidget);
@@ -58,18 +60,18 @@ void main() {
       (tester) async {
     await harness.pump(tester);
 
-    await harness.tapKey(tester, const Key('feeding-overview-edit-$firstDate'));
+    await harness.tapKey(tester, Key('feeding-overview-edit-$firstDate'));
 
-    expect(find.byKey(const Key('feeding-date-section-$firstDate')),
+    expect(find.byKey(Key('feeding-date-section-$firstDate')),
         findsOneWidget);
-    expect(find.byKey(const Key('feeding-date-section-$secondDate')),
+    expect(find.byKey(Key('feeding-date-section-$secondDate')),
         findsNothing);
-    expect(find.byKey(const Key('feeding-feed-row-$firstDate-0')),
+    expect(find.byKey(Key('feeding-feed-row-$firstDate-0')),
         findsOneWidget);
     expect(
       tester
           .widget<DropdownButton<int>>(
-            find.byKey(const Key('feeding-feed-grams-$firstDate-0')),
+            find.byKey(Key('feeding-feed-grams-$firstDate-0')),
           )
           .value,
       15,
@@ -105,11 +107,12 @@ void main() {
     await harness.openEditor(tester, firstDate);
 
     await tester
-        .tap(find.byKey(const Key('feeding-date-change-$firstDate')));
+        .tap(find.byKey(Key('feeding-date-change-$firstDate')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('feeding-calendar-confirm')), findsOneWidget,
         reason: 'the calendar did not open');
-    await tester.tap(find.byKey(const Key('feeding-day-$movedDate')));
+    await navigateCalendarMonth(tester, movedDate);
+    await tester.tap(find.byKey(Key('feeding-day-$movedDate')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
     await tester.pumpAndSettle();
@@ -128,7 +131,7 @@ void main() {
     await harness.pump(tester);
 
     await harness.tapKey(
-        tester, const Key('feeding-overview-delete-$firstDate'));
+        tester, Key('feeding-overview-delete-$firstDate'));
 
     expect(harness.feeding.deletes, hasLength(1));
     expect(harness.feeding.deletes.single, unorderedEquals(['a1', 'a2']));
@@ -147,15 +150,16 @@ void main() {
     await tester.tap(find.byKey(const Key('feeding-mode-multiple')));
     await tester.pumpAndSettle();
     for (final date in [thirdDate, fourthDate]) {
+      await navigateCalendarMonth(tester, date);
       await tester.tap(find.byKey(Key('feeding-day-$date')));
       await tester.pumpAndSettle();
     }
     await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('feeding-date-section-$thirdDate')),
+    expect(find.byKey(Key('feeding-date-section-$thirdDate')),
         findsOneWidget);
-    expect(find.byKey(const Key('feeding-date-section-$fourthDate')),
+    expect(find.byKey(Key('feeding-date-section-$fourthDate')),
         findsOneWidget);
 
     await harness.selectGrams(tester, thirdDate, 0, '25 grams');
@@ -176,7 +180,7 @@ void main() {
     await harness.pump(
       tester,
       extraSchedules: [
-        const FeedingSchedule(
+        FeedingSchedule(
           id: 'other-1',
           deviceId: 'other-device',
           feedDate: thirdDate,
@@ -188,7 +192,7 @@ void main() {
       ],
     );
 
-    expect(find.byKey(const Key('feeding-overview-group-$thirdDate')),
+    expect(find.byKey(Key('feeding-overview-group-$thirdDate')),
         findsNothing,
         reason: 'another device must not appear in the overview');
     expect(find.text(thirdDate), findsNothing);
@@ -196,11 +200,12 @@ void main() {
     await harness.tapKey(tester, const Key('feeding-choose-dates'));
     await tester.tap(find.byKey(const Key('feeding-mode-multiple')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('feeding-day-$thirdDate')));
+    await navigateCalendarMonth(tester, thirdDate);
+    await tester.tap(find.byKey(Key('feeding-day-$thirdDate')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('feeding-date-section-$thirdDate')),
+    expect(find.byKey(Key('feeding-date-section-$thirdDate')),
         findsOneWidget);
     await harness.saveEditor(tester);
 
@@ -208,6 +213,178 @@ void main() {
         reason: 'a different device must not block the save at 08:00');
     expect(harness.feeding.creates.single.single.feedDate, thirdDate);
     expect(harness.feeding.creates.single.single.time, '08:00');
+  });
+
+  testWidgets('an overview row toggle pauses that schedule', (tester) async {
+    await harness.pump(tester);
+
+    await harness.tapKey(tester, const Key('feeding-overview-toggle-a1'));
+
+    expect(harness.feeding.toggles, [
+      (id: 'a1', active: false),
+    ], reason: 'a1 starts active, so the switch must turn it off');
+  });
+
+  testWidgets('a paused row is dimmed while an active row is not',
+      (tester) async {
+    await harness.pump(
+      tester,
+      extraSchedules: [
+        FeedingSchedule(
+          id: 'paused',
+          feedDate: firstDate,
+          time: '12:00',
+          grams: 10,
+          rotatorPwm: 255,
+          active: false,
+        ),
+      ],
+    );
+
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.byKey(const Key('feeding-overview-row-paused')),
+          )
+          .opacity,
+      0.55,
+    );
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.byKey(const Key('feeding-overview-row-a1')),
+          )
+          .opacity,
+      1.0,
+    );
+  });
+
+  testWidgets('no row toggle is available while no device is paired',
+      (tester) async {
+    await harness.pump(tester);
+    harness.device.deviceId = null;
+    harness.device.notifyListeners();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('feeding-overview-toggle-a1')), findsNothing);
+  });
+
+  testWidgets('empty Save is disabled and creates nothing', (tester) async {
+    await harness.pump(tester);
+    await harness.chooseDates(tester, [thirdDate]);
+    await tester.tap(find.byKey(Key('feeding-remove-feed-$thirdDate-0')));
+    await tester.pumpAndSettle();
+
+    final save = find.byKey(const Key('feeding-date-editor-save'));
+    expect(tester.widget<ElevatedButton>(save).onPressed, isNull);
+    await harness.saveEditor(tester);
+
+    expect(harness.feeding.creates, isEmpty);
+    expect(find.byKey(const Key('feeding-date-editor-save')), findsOneWidget);
+  });
+
+  testWidgets('empty Save cannot silently delete a date group',
+      (tester) async {
+    await harness.pump(tester);
+    await harness.openEditor(tester, firstDate);
+    await tester.tap(find.byKey(Key('feeding-remove-feed-$firstDate-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('feeding-remove-feed-$firstDate-0')));
+    await tester.pumpAndSettle();
+
+    final save = find.byKey(const Key('feeding-date-editor-save'));
+    expect(tester.widget<ElevatedButton>(save).onPressed, isNull);
+    await harness.saveEditor(tester);
+
+    expect(harness.feeding.updates, isEmpty);
+    expect(harness.feeding.deletes, isEmpty);
+    expect(find.byKey(const Key('feeding-date-editor-save')), findsOneWidget);
+  });
+
+  testWidgets('Convert to date rewrites the legacy group with that date',
+      (tester) async {
+    await harness.pump(tester);
+
+    await harness.tapKey(
+        tester, const Key('feeding-overview-convert-every-day'));
+    expect(find.byKey(const Key('feeding-calendar-confirm')), findsOneWidget,
+        reason: 'the calendar did not open');
+    await navigateCalendarMonth(tester, convertDate);
+    await tester.tap(find.byKey(Key('feeding-day-$convertDate')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(harness.feeding.updates, hasLength(1));
+    final call = harness.feeding.updates.single;
+    expect(call.date, convertDate);
+    expect(call.original.map((s) => s.id), orderedEquals(['legacy-1']));
+    expect(call.edited.single.feedDate, convertDate);
+  });
+
+  testWidgets('legacy every-day Edit keeps feed_date null on save',
+      (tester) async {
+    await harness.pump(tester);
+    await harness.openEditor(tester, everyDayKey);
+
+    expect(find.byKey(const Key('feeding-date-section-$everyDayKey')),
+        findsOneWidget);
+    await harness.selectGrams(tester, everyDayKey, 0, '25 grams');
+    await harness.saveEditor(tester);
+
+    expect(harness.feeding.updates, hasLength(1));
+    final call = harness.feeding.updates.single;
+    expect(call.date, isNull);
+    expect(call.original.map((s) => s.id), orderedEquals(['legacy-1']));
+    expect(call.edited.single.feedDate, isNull);
+    expect(call.edited.single.grams, 25);
+  });
+
+  testWidgets('a failed create shows a failure and no success message',
+      (tester) async {
+    harness.feeding.failWrite = 'create';
+    await harness.pump(tester);
+    await harness.chooseDates(tester, [thirdDate]);
+    await harness.saveEditor(tester);
+
+    expect(find.textContaining('Could not save feeds'), findsOneWidget);
+    expect(find.textContaining('Added '), findsNothing);
+  });
+
+  testWidgets('a failed group edit shows a failure message', (tester) async {
+    harness.feeding.failWrite = 'update';
+    await harness.pump(tester);
+    await harness.openEditor(tester, firstDate);
+    await harness.saveEditor(tester);
+
+    expect(find.textContaining('Could not update feeds'), findsOneWidget);
+  });
+
+  testWidgets('a failed conversion shows a failure message', (tester) async {
+    harness.feeding.failWrite = 'update';
+    await harness.pump(tester);
+    await harness.convertEveryDay(tester, convertDate);
+
+    expect(find.textContaining('Could not convert the date'), findsOneWidget);
+  });
+
+  testWidgets('a failed delete shows a failure message', (tester) async {
+    harness.feeding.failWrite = 'delete';
+    await harness.pump(tester);
+
+    await harness.tapKey(
+        tester, Key('feeding-overview-delete-$firstDate'));
+
+    expect(find.textContaining('Could not delete the date'), findsOneWidget);
+  });
+
+  testWidgets('a failed toggle shows a failure message', (tester) async {
+    harness.feeding.failWrite = 'toggle';
+    await harness.pump(tester);
+
+    await harness.tapKey(tester, const Key('feeding-overview-toggle-a1'));
+
+    expect(find.textContaining('Could not update this feed'), findsOneWidget);
   });
 }
 
@@ -221,13 +398,17 @@ class UpdateCall {
 }
 
 /// Stubs every write the new UI can make, and keeps the schedules in memory
-/// so each test starts from the same three groups.
+/// so each test starts from the same three groups. [failWrite] makes one
+/// write kind throw so the UI error path can be exercised.
 class FakeFeedingProvider extends LocalFeedingProvider {
   FakeFeedingProvider(SupabaseClient client) : super(client: client);
 
   final List<UpdateCall> updates = [];
   final List<Set<String>> deletes = [];
   final List<List<FeedingDraft>> creates = [];
+  final List<({String id, bool active})> toggles = [];
+
+  String? failWrite;
 
   @override
   Future<void> fetchSchedules() async {}
@@ -235,6 +416,7 @@ class FakeFeedingProvider extends LocalFeedingProvider {
   @override
   Future<void> createSchedules(String deviceId, List<FeedingDraft> drafts) async {
     creates.add(List<FeedingDraft>.unmodifiable(drafts));
+    if (failWrite == 'create') throw Exception('simulated write failure');
   }
 
   @override
@@ -249,11 +431,19 @@ class FakeFeedingProvider extends LocalFeedingProvider {
       List<FeedingSchedule>.unmodifiable(original),
       List<FeedingDraft>.unmodifiable(edited),
     ));
+    if (failWrite == 'update') throw Exception('simulated write failure');
   }
 
   @override
   Future<void> deleteSchedules(Set<String> ids) async {
     deletes.add(Set<String>.unmodifiable(ids));
+    if (failWrite == 'delete') throw Exception('simulated write failure');
+  }
+
+  @override
+  Future<void> toggleSchedule(String id, bool active) async {
+    toggles.add((id: id, active: active));
+    if (failWrite == 'toggle') throw Exception('simulated write failure');
   }
 }
 
@@ -272,26 +462,27 @@ class _FeedingHarness {
     WidgetTester tester, {
     List<FeedingSchedule> extraSchedules = const [],
   }) async {
+    final today = DateTime.parse(deviceTodayDate());
     feeding.schedules = [
-      const FeedingSchedule(
+      FeedingSchedule(
         id: 'a1',
-        feedDate: '2026-11-24',
+        feedDate: _futureDate(today, 2),
         time: '08:00',
         grams: 15,
         rotatorPwm: 255,
         active: true,
       ),
-      const FeedingSchedule(
+      FeedingSchedule(
         id: 'a2',
-        feedDate: '2026-11-24',
+        feedDate: _futureDate(today, 2),
         time: '10:00',
         grams: 15,
         rotatorPwm: 255,
         active: true,
       ),
-      const FeedingSchedule(
+      FeedingSchedule(
         id: 'b1',
-        feedDate: '2026-11-25',
+        feedDate: _futureDate(today, 3),
         time: '09:00',
         grams: 10,
         rotatorPwm: 128,
@@ -341,6 +532,30 @@ class _FeedingHarness {
         reason: 'the editor did not open for $date');
   }
 
+  Future<void> chooseDates(WidgetTester tester, List<String> dates) async {
+    await tapKey(tester, const Key('feeding-choose-dates'));
+    expect(find.byKey(const Key('feeding-calendar-confirm')), findsOneWidget,
+        reason: 'the calendar did not open');
+    for (final date in dates) {
+      await navigateCalendarMonth(tester, date);
+      await tester.tap(find.byKey(Key('feeding-day-$date')));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> convertEveryDay(WidgetTester tester, String date) async {
+    await tapKey(tester, const Key('feeding-overview-convert-every-day'));
+    expect(find.byKey(const Key('feeding-calendar-confirm')), findsOneWidget,
+        reason: 'the calendar did not open');
+    await navigateCalendarMonth(tester, date);
+    await tester.tap(find.byKey(Key('feeding-day-$date')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('feeding-calendar-confirm')));
+    await tester.pumpAndSettle();
+  }
+
   Future<void> selectGrams(
     WidgetTester tester,
     String date,
@@ -355,6 +570,24 @@ class _FeedingHarness {
 
   Future<void> saveEditor(WidgetTester tester) async {
     await tester.tap(find.byKey(const Key('feeding-date-editor-save')));
+    await tester.pumpAndSettle();
+  }
+}
+
+String _futureDate(DateTime from, int daysAhead) {
+  final date = from.add(Duration(days: daysAhead));
+  return '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+}
+
+Future<void> navigateCalendarMonth(WidgetTester tester, String target) async {
+  final today = DateTime.parse(deviceTodayDate());
+  final chosen = DateTime.parse(target);
+  final monthsAhead =
+      (chosen.year - today.year) * 12 + chosen.month - today.month;
+  for (var i = 0; i < monthsAhead; i++) {
+    await tester.tap(find.byKey(const Key('feeding-calendar-next-month')));
     await tester.pumpAndSettle();
   }
 }

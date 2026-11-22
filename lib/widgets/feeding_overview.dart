@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
@@ -10,6 +12,30 @@ import '../services/local_feeding_provider.dart';
 import 'feeding_calendar.dart';
 import 'feeding_date_editor.dart';
 import 'motion.dart';
+
+/// Applies one schedule write through [write]. PostgREST writes are not
+/// transactional, so a failure is reported in the UI and the live list is
+/// re-fetched instead of leaving the caller to show a stale success state.
+/// Returns false on failure so callers skip their success message.
+Future<bool> runScheduleWrite(
+  BuildContext context, {
+  required Future<void> Function() write,
+  required String failureMessage,
+}) async {
+  final provider = context.read<LocalFeedingProvider>();
+  try {
+    await write();
+    return true;
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(failureMessage)));
+    }
+    await provider.fetchSchedules();
+    return false;
+  }
+}
 
 /// Date-grouped view of the saved schedules. Each card is one device-local
 /// date; legacy rows without a date share the "Every day" card until it is
@@ -64,7 +90,11 @@ class FeedingOverview extends StatelessWidget {
                       children: FadeSlideIn.stagger(
                         [
                           for (final group in groups)
-                            _DateGroupCard(group: group, paired: paired),
+                            _DateGroupCard(
+                              key: ValueKey(group.date ?? everyDayKey),
+                              group: group,
+                              paired: paired,
+                            ),
                         ],
                         from: const Offset(-0.08, 0),
                       ),
@@ -76,7 +106,7 @@ class FeedingOverview extends StatelessWidget {
 }
 
 class _DateGroupCard extends StatefulWidget {
-  const _DateGroupCard({required this.group, required this.paired});
+  const _DateGroupCard({super.key, required this.group, required this.paired});
 
   final FeedingDateGroup group;
   final bool paired;
@@ -98,6 +128,10 @@ class _DateGroupCardState extends State<_DateGroupCard> {
   Future<void> _edit() async {
     final group = widget.group;
     final dateKey = _key;
+    final provider = context.read<LocalFeedingProvider>();
+    final deviceId = context.read<DeviceProvider>().deviceId;
+    if (deviceId == null) return;
+
     final result = await showFeedingDateEditor(
       context,
       dates: [dateKey],
@@ -116,9 +150,7 @@ class _DateGroupCardState extends State<_DateGroupCard> {
       // Conflict checks see only schedules saved for this device. The group
       // being edited excludes its own rows: it supplies them as drafts
       // instead.
-      existing: context
-          .read<LocalFeedingProvider>()
-          .schedulesForDevice(context.read<DeviceProvider>().deviceId),
+      existing: provider.schedulesForDevice(deviceId),
       excludedIds: group.feeds.map((feed) => feed.id).toSet(),
     );
     if (result == null || !mounted || result.isEmpty) return;
@@ -127,17 +159,26 @@ class _DateGroupCardState extends State<_DateGroupCard> {
     // is the source of truth rather than the group we opened with.
     final entry = result.entries.first;
     final newDate = entry.key == everyDayKey ? null : entry.key;
-    final deviceId = context.read<DeviceProvider>().deviceId;
-    if (deviceId == null) return;
-    await context.read<LocalFeedingProvider>().updateScheduleGroup(
-          deviceId,
-          newDate,
-          group.feeds,
-          entry.value,
-        );
+    await runScheduleWrite(
+      context,
+      failureMessage: 'Could not update feeds. Please try again.',
+      write: () => provider.updateScheduleGroup(
+        deviceId,
+        newDate,
+        group.feeds,
+        entry.value,
+      ),
+    );
   }
 
   Future<void> _convertToDate() async {
+    // Capture the group before the calendar await: reordering or rebuilding
+    // the overview must not switch which group this action converts.
+    final group = widget.group;
+    final provider = context.read<LocalFeedingProvider>();
+    final deviceId = context.read<DeviceProvider>().deviceId;
+    if (deviceId == null) return;
+
     final chosen = await showFeedingCalendar(
       context,
       initialMode: FeedingCalendarMode.single,
@@ -145,9 +186,6 @@ class _DateGroupCardState extends State<_DateGroupCard> {
     if (chosen == null || chosen.isEmpty || !mounted) return;
     final date = chosen.first;
 
-    final provider = context.read<LocalFeedingProvider>();
-    final deviceId = context.read<DeviceProvider>().deviceId;
-    if (deviceId == null) return;
     final alreadyDated = groupFeedsByDate(provider.schedulesForDevice(deviceId))
         .any((group) => group.date == date);
     if (alreadyDated) {
@@ -157,29 +195,43 @@ class _DateGroupCardState extends State<_DateGroupCard> {
       return;
     }
 
-    final group = widget.group;
-    await provider.updateScheduleGroup(
-      deviceId,
-      date,
-      group.feeds,
-      [
-        for (final feed in group.feeds)
-          FeedingDraft(
-            id: feed.id,
-            feedDate: date,
-            time: feed.time,
-            grams: feed.grams,
-            rotatorPwm: feed.rotatorPwm,
-          ),
-      ],
+    await runScheduleWrite(
+      context,
+      failureMessage: 'Could not convert the date. Please try again.',
+      write: () => provider.updateScheduleGroup(
+        deviceId,
+        date,
+        group.feeds,
+        [
+          for (final feed in group.feeds)
+            FeedingDraft(
+              id: feed.id,
+              feedDate: date,
+              time: feed.time,
+              grams: feed.grams,
+              rotatorPwm: feed.rotatorPwm,
+            ),
+        ],
+      ),
     );
   }
 
   void _delete() {
-    final provider = context.read<LocalFeedingProvider>();
-    provider.deleteSchedules(
-      widget.group.feeds.map((feed) => feed.id).toSet(),
-    );
+    final ids = widget.group.feeds.map((feed) => feed.id).toSet();
+    unawaited(runScheduleWrite(
+      context,
+      failureMessage: 'Could not delete the date. Please try again.',
+      write: () => context.read<LocalFeedingProvider>().deleteSchedules(ids),
+    ));
+  }
+
+  void _toggleFeed(FeedingSchedule feed, bool active) {
+    unawaited(runScheduleWrite(
+      context,
+      failureMessage: 'Could not update this feed. Please try again.',
+      write: () =>
+          context.read<LocalFeedingProvider>().toggleSchedule(feed.id, active),
+    ));
   }
 
   @override
@@ -275,33 +327,47 @@ class _DateGroupCardState extends State<_DateGroupCard> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         for (final feed in group.feeds)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Row(
-                              children: [
-                                Text(
-                                  feed.time,
-                                  style: const TextStyle(
-                                    color: AppColors.textPrimary,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    '${feed.grams}g · rotator '
-                                    '${FirmwareSpec.rotatorSpeedForPwm(feed.rotatorPwm).label}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
+                          AnimatedOpacity(
+                            key: Key('feeding-overview-row-${feed.id}'),
+                            duration: AppMotion.normal,
+                            opacity: feed.active ? 1.0 : 0.55,
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    feed.time,
                                     style: const TextStyle(
-                                      color: AppColors.textMuted,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textPrimary,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
                                     ),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      '${feed.grams}g · rotator '
+                                      '${FirmwareSpec.rotatorSpeedForPwm(feed.rotatorPwm).label}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: AppColors.textMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  Switch(
+                                    key: Key(
+                                        'feeding-overview-toggle-${feed.id}'),
+                                    value: feed.active,
+                                    activeThumbColor: AppColors.primary,
+                                    onChanged: widget.paired
+                                        ? (value) => _toggleFeed(feed, value)
+                                        : null,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                       ],

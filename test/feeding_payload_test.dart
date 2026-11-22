@@ -18,13 +18,18 @@ void main() {
         rotatorPwm: rotatorPwm,
       );
 
-  FeedingSchedule saved(String id, String time, {String? feedDate}) =>
+  FeedingSchedule saved(
+    String id,
+    String time, {
+    String? feedDate,
+    bool active = true,
+  }) =>
       FeedingSchedule(
         id: id,
         time: time,
         grams: 10,
         rotatorPwm: 255,
-        active: true,
+        active: active,
         feedDate: feedDate,
       );
 
@@ -84,6 +89,21 @@ void main() {
 
       expect(plan.updates.map((row) => row['id']).toList(), ['a', 'b']);
       expect(plan.updates.map((row) => row['feed_date']).toList(), [null, null]);
+      expect(plan.inserts, isEmpty);
+      expect(plan.deleteIds, isEmpty);
+    });
+
+    test('a paused legacy row stays paused when the group is edited', () {
+      final plan = planGroupUpdate(
+        deviceId: 'device-1',
+        userId: 'user-1',
+        date: null,
+        original: [saved('paused', '08:00', active: false)],
+        edited: [draft(id: 'paused', time: '08:00')],
+      );
+
+      expect(plan.updates.single['active'], false);
+      expect(plan.updates.single['feed_date'], isNull);
       expect(plan.inserts, isEmpty);
       expect(plan.deleteIds, isEmpty);
     });

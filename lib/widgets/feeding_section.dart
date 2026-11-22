@@ -68,7 +68,12 @@ class _LocalFeedingSectionState extends State<LocalFeedingSection> {
 
     final drafts = result.values.expand((rows) => rows).toList();
     if (drafts.isEmpty) return;
-    await context.read<LocalFeedingProvider>().createSchedules(deviceId, drafts);
+    final saved = await runScheduleWrite(
+      context,
+      failureMessage: 'Could not save feeds. Please try again.',
+      write: () => provider.createSchedules(deviceId, drafts),
+    );
+    if (!saved || !mounted) return;
     _toast('Added ${drafts.length} feed${drafts.length == 1 ? '' : 's'}');
   }
 

@@ -132,8 +132,11 @@ class _FeedingDateEditorState extends State<_FeedingDateEditor> {
     });
   }
 
+  bool get _hasRows => _byDate.values.any((rows) => rows.isNotEmpty);
+
   void _save() {
     final drafts = _byDate.values.expand((rows) => rows).toList();
+    if (drafts.isEmpty) return;
     final conflict = firstConflict(
       drafts,
       widget.existing
@@ -253,7 +256,7 @@ class _FeedingDateEditorState extends State<_FeedingDateEditor> {
         width: double.infinity,
         child: ElevatedButton.icon(
           key: const Key('feeding-date-editor-save'),
-          onPressed: _save,
+          onPressed: _hasRows ? _save : null,
           icon: const Icon(Icons.check, size: 18),
           label: const Text('Save'),
         ),
@@ -459,12 +462,12 @@ class _FeedRow extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Expanded(
+                      const Expanded(
                         child: Text(
                           FirmwareSpec.deviceTimezoneLabel,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: AppColors.textMuted,
                             fontSize: 11,
                           ),

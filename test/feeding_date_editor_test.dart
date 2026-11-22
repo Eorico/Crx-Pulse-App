@@ -149,6 +149,22 @@ void main() {
     expect(saved[firstDate]!.single.time, '09:00');
     expect(saved[secondDate]!.single.time, '09:30');
   });
+
+  testWidgets('Save is disabled when every date section is empty',
+      (tester) async {
+    await harness.open(tester, dates: [firstDate, secondDate]);
+
+    await tester.tap(find.byKey(Key('feeding-remove-feed-$firstDate-0')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(Key('feeding-remove-feed-$secondDate-0')));
+    await tester.pumpAndSettle();
+
+    final save = find.byKey(const Key('feeding-date-editor-save'));
+    expect(tester.widget<ElevatedButton>(save).onPressed, isNull);
+    await harness.save(tester);
+    expect(harness.result, isNull, reason: 'an empty result must not close');
+    expect(find.byKey(const Key('feeding-date-editor-save')), findsOneWidget);
+  });
 }
 
 /// Drives the real [showFeedingDateEditor] entry point and captures what it
