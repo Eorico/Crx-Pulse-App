@@ -1,6 +1,8 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
+import 'offline_reading_store.dart';
+
 /// The app's on-device database.
 ///
 /// In the Supabase build this holds only what is genuinely local to
@@ -14,8 +16,14 @@ import 'package:path/path.dart';
 ///
 /// Likewise `sensor_history.synced_to_firebase` is a leftover column
 /// name from the Firebase build. Renaming it would need a migration for
-/// no behavioural gain, so it stays; nothing uploads any more, because
+/// no behavioural gain, so it stays; nothing reads or writes it, because
 /// the device writes to the cloud directly.
+///
+/// The one thing this phone does upload is `offline_readings`: readings
+/// taken straight off the device's own WiFi while there was no internet.
+/// That is a separate table rather than a revival of the flag above —
+/// those rows have to carry a full `readings` row, device_id and
+/// validity flags included, which `sensor_history` has no columns for.
 class LocalDb {
   LocalDb._();
   static final LocalDb instance = LocalDb._();
@@ -30,7 +38,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'crx_pulse_local.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE feeding_schedules (
@@ -52,6 +60,7 @@ class LocalDb {
         ''');
         await _createSensorHistoryTable(db);
         await _createReadingCacheTable(db);
+        await _createOfflineReadingsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Existing installs (version 1) never had sensor_history -
@@ -62,6 +71,9 @@ class LocalDb {
         }
         if (oldVersion < 3) {
           await _createReadingCacheTable(db);
+        }
+        if (oldVersion < 4) {
+          await _createOfflineReadingsTable(db);
         }
       },
     );
@@ -95,6 +107,17 @@ class LocalDb {
   /// sensor_history" because the two have different jobs: this one must
   /// hold the very latest values even between history samples, and
   /// reading it must be a single primary-key lookup on app start.
+  /// Readings captured off the device's own WiFi while this phone had no
+  /// internet, waiting to be pushed to Supabase.
+  ///
+  /// Owned by [OfflineReadingStore], which holds the DDL next to the
+  /// code that reads and writes it; this class only decides when it
+  /// comes into existence.
+  Future<void> _createOfflineReadingsTable(Database db) async {
+    await db.execute(OfflineReadingStore.createSql);
+    await db.execute(OfflineReadingStore.createIndexSql);
+  }
+
   Future<void> _createReadingCacheTable(Database db) async {
     await db.execute('''
       CREATE TABLE reading_cache (

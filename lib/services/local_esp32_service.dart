@@ -1,20 +1,43 @@
 import 'dart:async';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
+import 'device_ap_client.dart';
+import 'offline_reading_store.dart';
+import 'offline_sync_service.dart';
 import 'reading_cache.dart';
 
-/// Live sensor readings — now a Supabase Realtime subscription on the
-/// `readings` table (was a Firestore stream).
+/// Live sensor readings, over whichever of two links is carrying them:
 ///
 ///   ESP32 -> Supabase readings table -> this .stream() -> the UI
+///   ESP32 -> its own WiFi -> /api/live -> this poller -> the UI
+///
+/// The first is the normal path. The second is for when the tank has no
+/// WiFi: the firmware raises its own access point (see
+/// serviceAccessPoint() in crx_pulse.ino), the phone joins it, and the
+/// readings come straight off the device — stored on this phone and
+/// pushed up the moment there is internet again.
+///
+/// Both paths end in the same [_onRows], so there is exactly one place
+/// that decides what a reading means: one freshness rule, one set of
+/// per-sensor validity gates, one cache write. The second link adds a
+/// source, not a second set of rules.
 ///
 /// The class name, public fields, and the Esp32ConnectionState enum are
-/// unchanged, so every screen that reads them keeps working — only the
-/// data SOURCE moved. Connection semantics are identical: anything other
-/// than a fresh reading clears every value to null so the UI shows
-/// "Not Connected" everywhere rather than a stale number.
+/// unchanged, so every screen that reads them keeps working. Connection
+/// semantics are identical: anything other than a fresh reading clears
+/// every value to null so the UI shows "Not Connected" everywhere rather
+/// than a stale number.
 enum Esp32ConnectionState { connecting, connected, unreachable }
+
+/// Which link carried the reading on screen.
+///
+/// Recorded rather than inferred from [Esp32ConnectionState], because a
+/// reading off the device's own WiFi makes the service `connected` too —
+/// and if that counted as the cloud being alive, the fallback poller
+/// would switch itself off after its first success.
+enum ReadingSource { cloud, deviceAp }
 
 /// A reading counts as live if it arrived within this window: three of
 /// the firmware's push intervals, so one dropped or slow insert does
@@ -23,8 +46,15 @@ enum Esp32ConnectionState { connecting, connected, unreachable }
 const Duration _freshWindow = FirmwareSpec.freshWindow;
 
 class LocalEsp32Service extends ChangeNotifier {
-  LocalEsp32Service({ReadingCache cache = const ReadingCache()})
-      : _cache = cache;
+  LocalEsp32Service({
+    ReadingCache cache = const ReadingCache(),
+    DeviceApClient apClient = const DeviceApClient(),
+    OfflineReadingStore offlineStore = const OfflineReadingStore(),
+    OfflineSyncService? sync,
+  })  : _cache = cache,
+        _ap = apClient,
+        _offline = offlineStore,
+        _sync = sync ?? OfflineSyncService(store: offlineStore);
 
   final SupabaseClient _sb = Supabase.instance.client;
 
@@ -49,14 +79,72 @@ class LocalEsp32Service extends ChangeNotifier {
   /// remembered value is never mistaken for a current one.
   bool isShowingCached = false;
 
+  /// True while the readings on screen arrived over the device's own
+  /// WiFi instead of through the cloud.
+  ///
+  /// Not the same as [isShowingCached]: these readings are live, taken
+  /// seconds ago. What is missing is the cloud, so they exist only on
+  /// this phone until [pendingUploadCount] drains.
+  bool isOfflineDirect = false;
+
+  /// Readings captured off the device's own WiFi that have not reached
+  /// Supabase yet.
+  int get pendingUploadCount => _sync.pending;
+
   final ReadingCache _cache;
+  final DeviceApClient _ap;
+  final OfflineReadingStore _offline;
+  final OfflineSyncService _sync;
 
   StreamSubscription<List<Map<String, dynamic>>>? _sub;
   Timer? _staleTimer;
   bool _disposed = false;
+  bool _starting = false;
   String? _deviceId;
 
+  // ---- offline fallback ---------------------------------------------
+
+  /// How often to ask the device's own WiFi for a reading: the same
+  /// cadence the firmware pushes to the cloud, so the dashboard updates
+  /// at the same rate offline as online and the buffer fills at the rate
+  /// the cloud would have been filled.
+  static const Duration _apPollInterval = FirmwareSpec.readingInterval;
+
+  /// Longest gap between probes once nothing is answering on the
+  /// device's AP address — which is the ordinary case, every time this
+  /// phone is on the tank's real WiFi.
+  static const Duration _apProbeMaxGap = Duration(seconds: 15);
+
+  /// Retry the cloud after this many buffered readings — about once a
+  /// minute at the poll interval above.
+  ///
+  /// A phone can be joined to the device's access point on WiFi and
+  /// still have a route out over cellular. Nothing available here tells
+  /// that apart from being genuinely offline, so the buffer would
+  /// otherwise grow for hours with the cloud reachable the whole time.
+  static const int _flushEveryNBuffered = 20;
+
+  Timer? _apTimer;
+  StreamSubscription<List<ConnectivityResult>>? _conn;
+  bool _apPollInFlight = false;
+  DateTime? _nextApProbe;
+  int _apMisses = 0;
+  int _bufferedSinceFlush = 0;
+
+  /// When the last reading that came through the CLOUD was recorded.
+  /// Drives [_cloudIsFresh]; never set from an offline reading.
+  DateTime? _lastCloudAt;
+
   bool get isTracking => state == Esp32ConnectionState.connected;
+
+  /// Whether the cloud stream is currently feeding us fresh readings.
+  ///
+  /// While this holds, the fallback poller stays silent: there is
+  /// nothing it could add, and probing an address that is not there
+  /// would cost a timeout every few seconds.
+  bool get _cloudIsFresh =>
+      _lastCloudAt != null &&
+      DateTime.now().difference(_lastCloudAt!).abs() <= _freshWindow;
 
   void _clearReadings() {
     ph = null;
@@ -68,6 +156,7 @@ class LocalEsp32Service extends ChangeNotifier {
     fanActive = false;
     fanDutyPercent = 0;
     isShowingCached = false;
+    isOfflineDirect = false;
   }
 
   /// Paint the last known reading before the network is touched.
@@ -115,11 +204,30 @@ class LocalEsp32Service extends ChangeNotifier {
   /// Safe to call again after pairing — the early-return paths below do
   /// not create a subscription, so a later call re-attempts cleanly.
   Future<void> startPolling() async {
-    if (_sub != null) return;
+    // Four screens call this, pull-to-refresh calls it, and the
+    // connectivity watch below now calls it too. `_sub != null` alone
+    // does not keep them apart: two callers can both get past it while
+    // the first is still awaiting the device lookup, and end up opening
+    // two subscriptions to the same table.
+    if (_sub != null || _starting) return;
+    _starting = true;
+    try {
+      await _openCloudStream();
+    } finally {
+      _starting = false;
+    }
+  }
 
+  Future<void> _openCloudStream() async {
     // Before any await, so the dashboard fills immediately rather than
     // after the device lookup and the subscription handshake.
     await _restoreFromCache();
+
+    // Deliberately ahead of every early return below. All three of them
+    // — no session, no paired device, no internet — are exactly the
+    // situations in which the device's own WiFi is the only link there
+    // is, so the fallback cannot be set up after them.
+    _startOfflineFallback();
 
     final uid = _sb.auth.currentUser?.id;
     if (uid == null) {
@@ -146,10 +254,17 @@ class LocalEsp32Service extends ChangeNotifier {
       }
       _deviceId = devs.first['device_id'] as String?;
     } catch (_) {
-      _clearReadings();
-      state = Esp32ConnectionState.unreachable;
-      errorMessage = "Can't reach the cloud. Check this phone's internet connection.";
-      notifyListeners();
+      // Being unable to reach the cloud says nothing about the DEVICE.
+      // If the fallback poller is already feeding us straight off its
+      // access point, those readings are seconds old and live, and a
+      // failed cloud lookup must not wipe them off the screen.
+      if (!isOfflineDirect) {
+        _clearReadings();
+        state = Esp32ConnectionState.unreachable;
+        errorMessage =
+            "Can't reach the cloud. Check this phone's internet connection.";
+        notifyListeners();
+      }
       return;
     }
 
@@ -160,6 +275,7 @@ class LocalEsp32Service extends ChangeNotifier {
         .order('recorded_at', ascending: false)
         .limit(1)
         .listen(_onRows, onError: (_) {
+      if (isOfflineDirect) return;   // see the catch above
       _clearReadings();
       state = Esp32ConnectionState.unreachable;
       errorMessage = "Can't reach the cloud. Check this phone's internet connection.";
@@ -175,13 +291,160 @@ class LocalEsp32Service extends ChangeNotifier {
     _sub = null;
     _staleTimer?.cancel();
     _staleTimer = null;
+    _apTimer?.cancel();
+    _apTimer = null;
+    _conn?.cancel();
+    _conn = null;
+    _lastCloudAt = null;
+    _nextApProbe = null;
+    _apMisses = 0;
+    _bufferedSinceFlush = 0;
     _deviceId = null;
     _clearReadings();
     state = Esp32ConnectionState.connecting;
     notifyListeners();
+
+    // Buffered readings are NOT dropped here. stopPolling() runs on
+    // sign-out, and those readings are the tank's history, not this
+    // session's: each one carries the device_id it was taken from, so
+    // whenever somebody signs in again they go up to the account that
+    // owns that device.
   }
 
-  void _onRows(List<Map<String, dynamic>> rows) {
+  // =====================================================================
+  // OFFLINE FALLBACK — readings straight off the device's own WiFi
+  // =====================================================================
+
+  /// Starts the fallback poller, the connectivity watch and the stale
+  /// check. Idempotent: every call site of [startPolling] reaches it,
+  /// including pull-to-refresh.
+  void _startOfflineFallback() {
+    _apTimer ??=
+        Timer.periodic(_apPollInterval, (_) => unawaited(_pollDeviceAp()));
+    _conn ??=
+        Connectivity().onConnectivityChanged.listen(_onConnectivityChanged);
+
+    // The stale check used to be started only on the success path. It
+    // has to run here too, or an offline reading would never age out of
+    // the dashboard once the phone leaves the tank's AP. It is a no-op
+    // while lastUpdated is null, so starting it early changes nothing
+    // for the cloud path.
+    _staleTimer ??=
+        Timer.periodic(const Duration(seconds: 5), (_) => _reevaluate());
+
+    // Don't wait for the first tick. If the phone is already on the
+    // device's AP when the app opens, the dashboard should fill now.
+    unawaited(_pollDeviceAp());
+
+    // Surface a queue left over from a previous run before anything is
+    // pushed, so the number on screen is the real one.
+    unawaited(_sync.refresh().then((n) {
+      if (n > 0 && !_disposed) notifyListeners();
+    }));
+  }
+
+  /// Asks the device's access point for its current reading, buffers it,
+  /// and paints it.
+  ///
+  /// Does nothing at all when the cloud is feeding us, when a probe is
+  /// already in flight, or while backing off from an address that is not
+  /// answering.
+  Future<void> _pollDeviceAp() async {
+    if (_disposed || _apPollInFlight) return;
+    if (_cloudIsFresh) return;
+    if (_nextApProbe != null && DateTime.now().isBefore(_nextApProbe!)) return;
+
+    _apPollInFlight = true;
+    try {
+      final live = await _ap.fetchLive();
+      if (_disposed) return;
+
+      if (live == null) {
+        _apMisses++;
+        // 3 s, 6 s, 12 s, then 15 s. On the tank's normal WiFi nothing
+        // will ever answer, and this is the cost of asking.
+        final gap = _apPollInterval * (1 << (_apMisses > 3 ? 3 : _apMisses));
+        _nextApProbe =
+            DateTime.now().add(gap > _apProbeMaxGap ? _apProbeMaxGap : gap);
+        return;
+      }
+
+      _apMisses = 0;
+      _nextApProbe = null;
+
+      // Joining the wrong tank's access point must not file its readings
+      // under this account. When the paired device is known, refuse any
+      // other; when the app has never been online it cannot know, and
+      // the AP's WPA2 password is the only authentication available —
+      // the same one the user needed to get onto the network.
+      final apDeviceId = live['device_id'] as String?;
+      if (_deviceId != null && apDeviceId != _deviceId) return;
+
+      final row = Map<String, dynamic>.from(live);
+      // The firmware sends no timestamp on purpose: offline it has no
+      // trustworthy clock, since NTP needs internet. This phone's clock
+      // is the only real one in the room, and the row cannot be stored
+      // or pushed without one.
+      row['recorded_at'] = DateTime.now().toUtc().toIso8601String();
+
+      // Stored BEFORE it is painted. If the app is killed in the next
+      // instant, a reading on disk is worth more than a reading that was
+      // briefly on screen.
+      _sync.noteBuffered(await _offline.add(row));
+      if (_disposed) return;
+
+      if (++_bufferedSinceFlush >= _flushEveryNBuffered) {
+        _bufferedSinceFlush = 0;
+        unawaited(_flushOffline());   // fails harmlessly with no route
+      }
+
+      // Buffering happens whether or not anybody is signed in: these
+      // readings belong to the tank, not to the session, and they are
+      // still owed to the cloud. Showing them is a different question —
+      // a signed-out app shows nothing, which is the rule startPolling()
+      // has already applied, and repainting here would undo it.
+      if (_sb.auth.currentUser == null) return;
+
+      _onRows([row], source: ReadingSource.deviceAp);
+    } catch (_) {
+      // A failed buffer write must not take the poller down with it; the
+      // next tick tries again.
+    } finally {
+      _apPollInFlight = false;
+    }
+  }
+
+  void _onConnectivityChanged(List<ConnectivityResult> results) {
+    if (_disposed) return;
+    if (results.every((r) => r == ConnectivityResult.none)) return;
+
+    // Having an interface is not having internet — the device's own
+    // access point is a wifi interface with nothing behind it — so both
+    // of these are written to fail harmlessly when there is no route
+    // out, rather than being gated on a guess about which network this
+    // is.
+    unawaited(_flushOffline());
+    if (_sub == null) unawaited(startPolling());
+
+    // The network changed underneath us, so don't serve out a backoff
+    // earned on the previous one.
+    _apMisses = 0;
+    _nextApProbe = null;
+    unawaited(_pollDeviceAp());
+  }
+
+  Future<void> _flushOffline() async {
+    final pushed = await _sync.flush();
+    if (pushed > 0 && !_disposed) notifyListeners();
+  }
+
+  /// The one place a reading becomes what the dashboard shows,
+  /// whichever link brought it.
+  ///
+  /// [source] defaults to the cloud so this is still assignable to
+  /// `.listen()` as it was; the fallback poller passes it explicitly.
+  void _onRows(List<Map<String, dynamic>> rows,
+      {ReadingSource source = ReadingSource.cloud}) {
     if (_disposed) return;
 
     if (rows.isEmpty) {
@@ -198,6 +461,11 @@ class LocalEsp32Service extends ChangeNotifier {
 
     final fresh = DateTime.now().difference(readingTime).abs() <= _freshWindow;
     if (!fresh) {
+      // A stale cloud row means the device has not reached the cloud
+      // lately — which is exactly the situation the fallback exists for.
+      // It says nothing about the readings coming off the device's own
+      // WiFi, and those are the newer information.
+      if (source == ReadingSource.cloud && isOfflineDirect) return;
       lastUpdated = readingTime.toLocal();
       _clearReadings();
       state = Esp32ConnectionState.unreachable;
@@ -221,6 +489,17 @@ class LocalEsp32Service extends ChangeNotifier {
 
     lastUpdated = readingTime.toLocal();
     isShowingCached = false;
+    isOfflineDirect = source == ReadingSource.deviceAp;
+
+    if (source == ReadingSource.cloud) {
+      _lastCloudAt = readingTime;
+      // A reading that arrived through the cloud is proof this phone has
+      // internet — better proof than any connectivity API gives — so
+      // this is where a buffered queue gets drained. Cheap when there is
+      // nothing queued: the service returns without touching the
+      // network or the database.
+      unawaited(_flushOffline());
+    }
 
     // Remember it for the next cold start. Fire-and-forget: a failed
     // cache write must not delay or disturb the live update.
@@ -267,6 +546,8 @@ class LocalEsp32Service extends ChangeNotifier {
     _disposed = true;
     _sub?.cancel();
     _staleTimer?.cancel();
+    _apTimer?.cancel();
+    _conn?.cancel();
     super.dispose();
   }
 }

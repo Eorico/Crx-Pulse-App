@@ -45,5 +45,28 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- The ESP32's offline access point is plain HTTP: the board has no
+	     certificate and no way to get one. App Transport Security is
+	     relaxed for that one address only, so every other request the app
+	     makes still has to be HTTPS. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>192.168.4.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
+	<!-- iOS 14+ asks the user before an app may talk to anything on the
+	     local network, and shows this sentence when it asks. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CRX PULSE reads your tank directly from the CRX-Pulse device when there is no internet.</string>
 </dict>
 </plist>

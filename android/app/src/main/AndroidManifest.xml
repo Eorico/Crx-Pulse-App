@@ -1,8 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Reaching Supabase, and reaching the ESP32's own access point when
+         there is no WiFi. Declared here rather than only in the debug
+         manifest, where it was added for hot reload: a release build was
+         shipping without it. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Needed to see which network this phone is on, so a reading can be
+         pushed to the cloud as soon as there is a route to it. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
     <application
         android:label="CRX PULSE"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -47,11 +47,21 @@ class FirmwareSpec {
   FirmwareSpec._();
 
   // ───────────────────────── cloud cadence ─────────────────────────
-  // CLOUD_READING_INTERVAL in the firmware.
-  static const Duration readingInterval = Duration(seconds: 10);
+  /// CLOUD_READING_INTERVAL in the firmware.
+  ///
+  /// Was 10 s here while the firmware had moved to 3 s. Nothing read it,
+  /// so nothing misbehaved — but the offline fallback poller does read
+  /// it now, to ask the device's own WiFi at the rate the device would
+  /// have pushed to the cloud.
+  static const Duration readingInterval = Duration(seconds: 3);
 
-  /// A reading counts as live for three pushes' worth of time — one
-  /// dropped insert (or a slow one) must not read as a disconnection.
+  /// How long a reading counts as live.
+  ///
+  /// Unchanged at 30 s. That is ten pushes rather than the three the
+  /// comment here used to claim, which is deliberately generous: a
+  /// reading is only three seconds of the tank's life, and flipping the
+  /// whole dashboard to "Not Connected" over one slow insert would be
+  /// worse than showing a value a few seconds old.
   static const Duration freshWindow = Duration(seconds: 30);
 
   // ───────────────────────── cooling fan ─────────────────────────

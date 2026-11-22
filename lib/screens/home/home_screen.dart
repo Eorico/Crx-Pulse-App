@@ -271,17 +271,13 @@ class _LocalHomeScreenState extends State<LocalHomeScreen> {
 
                     if (esp32.lastUpdated != null) ...[
                       const SizedBox(height: 20),
-                      Center(
-                        child: SwapIn(
-                          swapKey: esp32.lastUpdated,
-                          duration: AppMotion.fast,
-                          child: Text(
-                            'Updated ${_hms(esp32.lastUpdated!)}',
-                            style: const TextStyle(
-                                color: AppColors.textMuted,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600),
-                          ),
+                      SwapIn(
+                        swapKey: esp32.lastUpdated,
+                        duration: AppMotion.fast,
+                        child: UpdatedFooter(
+                          at: esp32.lastUpdated!,
+                          offlineDirect: esp32.isOfflineDirect,
+                          pending: esp32.pendingUploadCount,
                         ),
                       ),
                     ],
@@ -295,8 +291,63 @@ class _LocalHomeScreenState extends State<LocalHomeScreen> {
     );
   }
 
-  static String _hms(DateTime t) =>
+}
+
+/// The "Updated HH:MM:SS" line under the dashboard — and, while the
+/// readings are arriving straight off the device's own WiFi, where they
+/// came from and how many are still waiting to reach the cloud.
+///
+/// That second line is the whole reason this is not just a Text. Without
+/// it the dashboard looks identical online and offline, and the one
+/// thing worth knowing — that these numbers live on this phone only —
+/// would be invisible.
+///
+/// Takes plain values rather than the service, so it can be laid out in
+/// a test without a Supabase client behind it.
+class UpdatedFooter extends StatelessWidget {
+  const UpdatedFooter({
+    super.key,
+    required this.at,
+    this.offlineDirect = false,
+    this.pending = 0,
+  });
+
+  final DateTime at;
+  final bool offlineDirect;
+  final int pending;
+
+  static const TextStyle style = TextStyle(
+      color: AppColors.textMuted, fontSize: 11, fontWeight: FontWeight.w600);
+
+  static String hms(DateTime t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
+
+  static String noteFor(int pending) {
+    const where = 'Direct from device — no internet';
+    if (pending <= 0) return where;
+    final queued = pending == 1 ? '1 reading' : '$pending readings';
+    return '$where\n$queued waiting to upload';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      // min, not the default max: this sits in a vertical list, where
+      // height is unbounded and a greedy Column would try to fill
+      // infinity.
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Updated ${hms(at)}', style: style),
+          if (offlineDirect) ...[
+            const SizedBox(height: 4),
+            Text(noteFor(pending),
+                textAlign: TextAlign.center, style: style),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _SectionLabel extends StatelessWidget {

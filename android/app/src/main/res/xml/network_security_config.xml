@@ -1,6 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android blocks plain HTTP by default from API 28 on. Supabase is HTTPS
+  and needs no exemption; the ESP32's offline access point cannot be,
+  because the board has no certificate and nothing to get one from.
+
+  So exactly one address is exempted: 192.168.4.1, the SoftAP gateway the
+  ESP-IDF assigns, which is where crx_pulse.ino serves /api/live and
+  /api/status when the tank has no WiFi. Everything else on the network
+  still has to be HTTPS.
+
+  (This file used to exempt 192.168.1.40 — the board's address back when
+  the app polled it over the house LAN. Nothing in the app had referred
+  to that address since the move to Supabase.)
+-->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.1.40</domain>
+        <domain includeSubdomains="false">192.168.4.1</domain>
     </domain-config>
 </network-security-config>
