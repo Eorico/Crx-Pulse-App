@@ -19,6 +19,10 @@ class FeedingSchedule {
   /// every day.
   final String? feedDate;
 
+  /// The device this row belongs to. Null on older rows, which the active
+  /// device inherits.
+  final String? deviceId;
+
   const FeedingSchedule({
     required this.id,
     required this.time,
@@ -26,6 +30,7 @@ class FeedingSchedule {
     required this.rotatorPwm,
     required this.active,
     this.feedDate,
+    this.deviceId,
   });
 
   bool get isDaily => feedDate == null;
@@ -46,6 +51,17 @@ class LocalFeedingProvider extends ChangeNotifier {
   StreamSubscription<List<Map<String, dynamic>>>? _sub;
 
   String? get _uid => _sb.auth.currentUser?.id;
+
+  /// Rows for [deviceId] only. Rows with no device id predate the column and
+  /// are treated as belonging to whichever device is active. The stream
+  /// itself is scoped by user, not device, so the UI must call this before
+  /// showing or validating schedules.
+  List<FeedingSchedule> schedulesForDevice(String? deviceId) =>
+      deviceId == null
+          ? const []
+          : schedules
+              .where((s) => s.deviceId == null || s.deviceId == deviceId)
+              .toList();
 
   /// Named fetchSchedules() so the call site keeps working; it opens a
   /// live stream of this user's schedules.
@@ -73,6 +89,7 @@ class LocalFeedingProvider extends ChangeNotifier {
                 FirmwareSpec.rotatorDefaultPwm,
             active: m['active'] as bool? ?? true,
             feedDate: m['feed_date'] as String?,
+            deviceId: m['device_id'] as String?,
           )).toList();
       isLoading = false;
       notifyListeners();

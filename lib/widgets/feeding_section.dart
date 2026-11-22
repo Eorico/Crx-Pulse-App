@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../core/theme.dart';
+import '../core/feeding_schedule.dart';
 import '../core/firmware_spec.dart';
 import '../services/local_feeding_provider.dart';
 import '../services/device_provider.dart';
+import 'feeding_calendar.dart';
+import 'feeding_date_editor.dart';
+import 'feeding_overview.dart';
 import 'motion.dart';
 
 /// Feeding controls, Supabase-backed:
@@ -14,8 +18,8 @@ import 'motion.dart';
 ///   - a ROTATOR SPEED dropdown — the five PWM levels setMotor1() was
 ///     bench-tested at, from [FirmwareSpec.rotatorSpeeds]
 ///   - "Feed Now" inserts a one-shot `feed_now` command row
-///   - a time picker + "Add Schedule" adds automatic feeding times
-///   - each schedule row has an on/off toggle and delete
+///   - "Choose dates" opens the calendar, then the per-date feed editor
+///   - the overview groups saved feeds by date for editing and deletion
 ///
 /// Everything writes to Supabase under the signed-in user, tagged with
 /// the paired device id, and the ESP32 reads it directly over PostgREST
@@ -34,13 +38,9 @@ class LocalFeedingSection extends StatefulWidget {
 }
 
 class _LocalFeedingSectionState extends State<LocalFeedingSection> {
-  TimeOfDay _time = const TimeOfDay(hour: 8, minute: 0);
   int _grams = 10;
   int _rotatorPwm = FirmwareSpec.rotatorDefaultPwm;
   bool _sending = false;
-
-  String get _timeText =>
-      '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}';
 
   @override
   void initState() {
@@ -50,37 +50,26 @@ class _LocalFeedingSectionState extends State<LocalFeedingSection> {
     });
   }
 
-  Future<void> _pickTime() async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _time,
-      initialEntryMode: TimePickerEntryMode.dial,
-      helpText: 'FEEDING TIME (${FirmwareSpec.deviceTimezoneLabel.toUpperCase()})',
-      // The app's global inputDecorationTheme was leaking into the
-      // picker's hour/minute fields and mangling them — see
-      // AppTheme.timePickerBuilder for the detail.
-      builder: AppTheme.timePickerBuilder,
+  Future<void> _onChooseDates(String deviceId) async {
+    final dates = await showFeedingCalendar(
+      context,
+      initialMode: FeedingCalendarMode.multiple,
     );
-    if (picked != null && mounted) setState(() => _time = picked);
-  }
+    if (dates == null || dates.isEmpty || !mounted) return;
 
-  Future<void> _onAdd(String deviceId) async {
-    final duplicate = context
-        .read<LocalFeedingProvider>()
-        .schedules
-        .any((s) => s.time == _timeText);
-    if (duplicate) {
-      _toast('There is already a schedule at $_timeText');
-      return;
-    }
+    final provider = context.read<LocalFeedingProvider>();
+    final result = await showFeedingDateEditor(
+      context,
+      dates: dates,
+      initialByDate: {for (final date in dates) date: <FeedingDraft>[]},
+      existing: provider.schedulesForDevice(deviceId),
+    );
+    if (result == null || !mounted) return;
 
-    await context.read<LocalFeedingProvider>().createSchedule(
-          deviceId,
-          _timeText,
-          _grams,
-          rotatorPwm: _rotatorPwm,
-        );
-    _toast('Schedule added — ${_grams}g at $_timeText');
+    final drafts = result.values.expand((rows) => rows).toList();
+    if (drafts.isEmpty) return;
+    await context.read<LocalFeedingProvider>().createSchedules(deviceId, drafts);
+    _toast('Added ${drafts.length} feed${drafts.length == 1 ? '' : 's'}');
   }
 
   Future<void> _onFeedNow(String deviceId) async {
@@ -104,7 +93,6 @@ class _LocalFeedingSectionState extends State<LocalFeedingSection> {
 
   @override
   Widget build(BuildContext context) {
-    final feeding = context.watch<LocalFeedingProvider>();
     final device = context.watch<DeviceProvider>();
     final deviceId = device.deviceId;
     final paired = deviceId != null;
@@ -189,34 +177,71 @@ class _LocalFeedingSectionState extends State<LocalFeedingSection> {
 
         const SizedBox(height: 12),
 
-        // ── Add a scheduled time ──
+        // ── Choose dates for automatic feeding ──
         _Card(
-          title: 'Add Automatic Feeding Time',
+          title: 'Automatic Feeding',
           children: [
-            const Text('Time · 24h · ${FirmwareSpec.deviceTimezoneLabel}',
-                style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            _TimeField(time: _timeText, onTap: _pickTime),
-            const SizedBox(height: 10),
-            SwapIn(
-              swapKey: '$_grams-$_rotatorPwm-$_timeText',
-              duration: AppMotion.fast,
-              child: Text(
-                'Will feed $_grams g at $_timeText every day, '
-                'rotator ${FirmwareSpec.rotatorSpeedForPwm(_rotatorPwm).label}.',
-                style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
-              ),
+            const Text(
+              'Choose one or more device dates, then set the feeds for each day.',
+              style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600),
             ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: paired ? () => _onAdd(deviceId) : null,
-                icon: const Icon(LucideIcons.plus, size: 18),
-                label: const Text('Add Schedule'),
+            const SizedBox(height: 10),
+            PressableScale(
+              key: const Key('feeding-choose-dates'),
+              onTap: paired ? () => _onChooseDates(deviceId) : null,
+              pressedScale: 0.985,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F3EF),
+                  borderRadius: BorderRadius.circular(AppRadius.chip),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.10),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(LucideIcons.calendarDays,
+                          size: 18, color: AppColors.primary),
+                    ),
+                    const SizedBox(width: 14),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Choose dates',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: AppColors.textPrimary,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          Text(
+                            FirmwareSpec.deviceTimezoneLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: AppColors.textMuted, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(LucideIcons.chevronRight,
+                        size: 18, color: AppColors.textMuted),
+                  ],
+                ),
               ),
             ),
           ],
@@ -224,109 +249,9 @@ class _LocalFeedingSectionState extends State<LocalFeedingSection> {
 
         const SizedBox(height: 12),
 
-        // ── Schedule list ──
-        AnimatedSize(
-          duration: AppMotion.normal,
-          curve: AppMotion.smooth,
-          alignment: Alignment.topCenter,
-          child: feeding.isLoading
-              ? const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Center(child: CircularProgressIndicator(color: AppColors.primary)))
-              : feeding.schedules.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text('No feeding times yet.',
-                          style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
-                    )
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: FadeSlideIn.stagger(
-                        [
-                          for (final s in feeding.schedules)
-                            _ScheduleRow(key: ValueKey(s.id), schedule: s),
-                        ],
-                        from: const Offset(-0.08, 0),
-                      ),
-                    ),
-        ),
+        // ── Saved feeds, grouped by date ──
+        const FeedingOverview(),
       ],
-    );
-  }
-}
-
-/// The time trigger.
-///
-/// Laid out as a two-line block rather than one cramped row: the old
-/// version put an icon, an 18px bold time, a Spacer and an 11px "Tap to
-/// change" on a single line inside a padded well, which left the hint
-/// fighting the time for space on a narrow phone. Now the time owns its
-/// line and the hint sits under it, so neither can be squeezed.
-class _TimeField extends StatelessWidget {
-  final String time;
-  final VoidCallback onTap;
-  const _TimeField({required this.time, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return PressableScale(
-      onTap: onTap,
-      pressedScale: 0.985,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF1F3EF),
-          borderRadius: BorderRadius.circular(AppRadius.chip),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(LucideIcons.clock, size: 18, color: AppColors.primary),
-            ),
-            const SizedBox(width: 14),
-            // Flexible, so a long locale string can never overflow the
-            // row — it ellipsises instead.
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SwapIn(
-                    swapKey: time,
-                    duration: AppMotion.fast,
-                    child: Text(
-                      time,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.textPrimary,
-                        letterSpacing: 1,
-                        height: 1.1,
-                      ),
-                    ),
-                  ),
-                  const Text(
-                    'Tap to change',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Icon(LucideIcons.chevronRight, size: 18, color: AppColors.textMuted),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -450,80 +375,4 @@ class _DeviceNote extends StatelessWidget {
                       color: AppColors.textSecondary, fontSize: 11, height: 1.3))),
         ]),
       );
-}
-
-/// One schedule row. Swipe it away to delete, toggle to pause — both
-/// routes go to the same provider, and the row dims while paused so an
-/// inactive schedule is obvious at a glance.
-class _ScheduleRow extends StatelessWidget {
-  final FeedingSchedule schedule;
-  const _ScheduleRow({super.key, required this.schedule});
-
-  @override
-  Widget build(BuildContext context) {
-    final provider = context.read<LocalFeedingProvider>();
-    final speed = FirmwareSpec.rotatorSpeedForPwm(schedule.rotatorPwm);
-
-    return Dismissible(
-      key: ValueKey('dismiss-${schedule.id}'),
-      direction: DismissDirection.endToStart,
-      onDismissed: (_) => provider.deleteSchedule(schedule.id),
-      background: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        alignment: Alignment.centerRight,
-        decoration: BoxDecoration(
-            color: AppColors.danger, borderRadius: BorderRadius.circular(14)),
-        child: const Icon(LucideIcons.trash2, color: Colors.white, size: 20),
-      ),
-      child: AnimatedOpacity(
-        duration: AppMotion.normal,
-        opacity: schedule.active ? 1.0 : 0.55,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
-          decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              boxShadow: AppShadows.card),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(schedule.time,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 15,
-                            letterSpacing: 0.3)),
-                    Text(
-                      '${schedule.grams}g · rotator ${speed.label}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: AppColors.textMuted,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: schedule.active,
-                activeThumbColor: AppColors.primary,
-                onChanged: (v) => provider.toggleSchedule(schedule.id, v),
-              ),
-              IconButton(
-                icon: const Icon(LucideIcons.trash2, color: AppColors.danger, size: 18),
-                onPressed: () => provider.deleteSchedule(schedule.id),
-                tooltip: 'Delete schedule',
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
