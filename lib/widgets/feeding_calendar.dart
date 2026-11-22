@@ -179,6 +179,7 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildHeader(context),
+            _buildQuickPicks(),
             _buildModeSelector(),
             _buildMonthBar(),
             _buildWeekdayRow(),
@@ -235,35 +236,104 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     );
   }
 
+  Widget _buildQuickPicks() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+      child: Wrap(
+        spacing: 8,
+        children: [
+          _quickChip(
+            key: const Key('feeding-quick-today'),
+            label: 'Today',
+            days: 1,
+          ),
+          _quickChip(
+            key: const Key('feeding-quick-tomorrow'),
+            label: 'Tomorrow',
+            days: 2,
+          ),
+          _quickChip(
+            key: const Key('feeding-quick-next-7'),
+            label: 'Next 7 days',
+            days: 7,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _quickChip({
+    required Key key,
+    required String label,
+    required int days,
+  }) {
+    return ActionChip(
+      key: key,
+      label: Text(label),
+      onPressed: () => _applyQuickPick(days),
+      backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+      side: BorderSide.none,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.chip),
+      ),
+      labelStyle: const TextStyle(
+        color: AppColors.primaryDark,
+        fontWeight: FontWeight.w700,
+        fontSize: 12,
+      ),
+    );
+  }
+
+  void _applyQuickPick(int days) {
+    final base = _parseDay(_today);
+    final selectable = <String>[
+      for (var offset = 0; offset < days; offset++)
+        _formatDay(base.add(Duration(days: offset))),
+    ].where((date) => !_isPast(date)).toList();
+    if (selectable.isEmpty) return;
+
+    setState(() {
+      if (days == 7) {
+        _mode = FeedingCalendarMode.range;
+        _selected = selectable;
+      } else {
+        _mode = FeedingCalendarMode.single;
+        _selected = [selectable.last];
+      }
+      _rangeStart = null;
+    });
+
+    final first = _parseDay(selectable.first);
+    final targetPage = _pageOf(first.year, first.month);
+    if (targetPage != _page) {
+      _pages.animateToPage(
+        targetPage,
+        duration: AppMotion.normal,
+        curve: AppMotion.enter,
+      );
+    }
+  }
+
   Widget _buildModeSelector() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
-      child: Wrap(
-        spacing: 10,
-        children: [
+      child: SegmentedButton<FeedingCalendarMode>(
+        showSelectedIcon: false,
+        segments: [
           for (final mode in FeedingCalendarMode.values)
-            ChoiceChip(
-              key: Key('feeding-mode-${mode.name}'),
-              label: Text(_modeLabel(mode)),
-              selected: _mode == mode,
-              showCheckmark: false,
-              backgroundColor: AppColors.surface,
-              selectedColor: AppColors.primary.withValues(alpha: 0.16),
-              side: BorderSide(
-                color: _mode == mode ? AppColors.primary : AppColors.border,
+            ButtonSegment<FeedingCalendarMode>(
+              value: mode,
+              label: KeyedSubtree(
+                key: Key('feeding-mode-${mode.name}'),
+                child: Text(_modeLabel(mode)),
               ),
-              labelStyle: TextStyle(
-                color:
-                    _mode == mode ? AppColors.primaryDark : AppColors.textSecondary,
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppRadius.chip),
-              ),
-              onSelected: (_) => _changeMode(mode),
             ),
         ],
+        selected: {_mode},
+        onSelectionChanged: (values) {
+          if (values.isNotEmpty) _changeMode(values.first);
+        },
       ),
     );
   }
@@ -369,9 +439,11 @@ class _FeedingCalendarState extends State<_FeedingCalendar> {
     }
 
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-        child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: weeks),
+        ),
       ),
     );
   }

@@ -65,6 +65,53 @@ void main() {
       '2026-10-27',
     ]);
   });
+
+  testWidgets('today quick pick replaces the existing selection', (tester) async {
+    await harness.open(tester,
+        mode: FeedingCalendarMode.multiple,
+        selected: const ['2026-10-24', '2026-10-25']);
+
+    await tester.tap(find.byKey(const Key('feeding-quick-today')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), ['2026-10-23']);
+  });
+
+  testWidgets('tomorrow quick pick selects only the next day', (tester) async {
+    await harness.open(tester, mode: FeedingCalendarMode.multiple);
+
+    await tester.tap(find.byKey(const Key('feeding-quick-tomorrow')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), ['2026-10-24']);
+  });
+
+  testWidgets('next 7 days crosses the month boundary', (tester) async {
+    await harness.open(tester, now: DateTime.utc(2026, 10, 30, 16, 30));
+
+    await tester.tap(find.byKey(const Key('feeding-quick-next-7')));
+    await tester.pumpAndSettle();
+
+    expect(await harness.confirm(tester), [
+      '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03',
+      '2026-11-04', '2026-11-05', '2026-11-06',
+    ]);
+  });
+
+  testWidgets('range mode returns every day across a month boundary',
+      (tester) async {
+    await harness.open(tester,
+        now: DateTime.utc(2026, 9, 29, 16, 30),
+        mode: FeedingCalendarMode.range);
+    await harness.tapDay(tester, '2026-09-30');
+    await tester.tap(find.byKey(const Key('feeding-calendar-next-month')));
+    await tester.pumpAndSettle();
+    await harness.tapDay(tester, '2026-10-02');
+
+    expect(await harness.confirm(tester), [
+      '2026-09-30', '2026-10-01', '2026-10-02',
+    ]);
+  });
 }
 
 /// Drives the real [showFeedingCalendar] entry point and captures what it
@@ -74,6 +121,7 @@ class _CalendarHarness {
 
   Future<void> open(
     WidgetTester tester, {
+    DateTime? now,
     FeedingCalendarMode mode = FeedingCalendarMode.single,
     List<String> selected = const [],
   }) async {
@@ -87,7 +135,7 @@ class _CalendarHarness {
                 onPressed: () async {
                   result = await showFeedingCalendar(
                     context,
-                    now: DateTime.utc(2026, 10, 22, 16, 30),
+                    now: now ?? DateTime.utc(2026, 10, 22, 16, 30),
                     selected: selected,
                     initialMode: mode,
                   );
