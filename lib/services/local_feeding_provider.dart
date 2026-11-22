@@ -13,13 +13,21 @@ class FeedingSchedule {
   final int grams;
   final int rotatorPwm;
   final bool active;
+
+  /// Device-local `YYYY-MM-DD`. Null is a legacy row the ESP32 fires
+  /// every day.
+  final String? feedDate;
+
   const FeedingSchedule({
     required this.id,
     required this.time,
     required this.grams,
     required this.rotatorPwm,
     required this.active,
+    this.feedDate,
   });
+
+  bool get isDaily => feedDate == null;
 }
 
 /// Feeding — schedules and manual feeds — lives in Supabase so the ESP32
@@ -47,7 +55,8 @@ class LocalFeedingProvider extends ChangeNotifier {
         .from('schedules')
         .stream(primaryKey: ['id'])
         .eq('user_id', uid)
-        .order('time')
+        .order('feed_date', ascending: true)
+        .order('time', ascending: true)
         .listen((rows) {
       schedules = rows.map((m) => FeedingSchedule(
             id: m['id'].toString(),
@@ -59,6 +68,7 @@ class LocalFeedingProvider extends ChangeNotifier {
             rotatorPwm: (m['rotator_pwm'] as num?)?.toInt() ??
                 FirmwareSpec.rotatorDefaultPwm,
             active: m['active'] as bool? ?? true,
+            feedDate: m['feed_date'] as String?,
           )).toList();
       isLoading = false;
       notifyListeners();
