@@ -24,8 +24,8 @@ void main() {
 
   /// And what handleApiStatus() serialises.
   const statusBody = '''
-  {"device_id":"CRX-PULSE-01","firmware":"1.0.0","sta_connected":false,
-   "ap_active":true,"ap_clients":1,"uptime_s":412,"free_heap":151234}
+  {"device_id":"CRX-PULSE-01","firmware":"1.0.0","build_tag":"2026.11.23-motor-first",
+   "sta_connected":false,"ap_active":true,"ap_clients":1,"uptime_s":412,"free_heap":151234}
   ''';
 
   DeviceApClient clientReturning(http.Response Function(http.Request) handler,
@@ -146,6 +146,18 @@ void main() {
       expect(s!['ap_active'], true);
       expect(s['ap_clients'], 1);
       expect(s['sta_connected'], false);
+      expect(s['build_tag'], '2026.11.23-motor-first');
+    });
+
+    test('still accepts an older status without a build tag', () async {
+      // Older firmware is still the right device. The app shows no tag
+      // for it rather than rejecting the whole status response.
+      final body = jsonDecode(statusBody) as Map<String, dynamic>
+        ..remove('build_tag');
+      final s = await respondingWith(jsonEncode(body)).fetchStatus();
+
+      expect(s, isNotNull);
+      expect(s!['device_id'], 'CRX-PULSE-01');
     });
 
     test('rejects a reading, which is a different route', () async {
