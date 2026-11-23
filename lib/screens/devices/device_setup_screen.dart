@@ -4,6 +4,7 @@ import '../../core/theme.dart';
 import '../../services/local_esp32_service.dart';
 import '../../services/device_provider.dart';
 import '../../widgets/connection_cpu_indicator.dart';
+import '../../widgets/firmware_build_row.dart';
 import '../../widgets/minimal_gif_header.dart';
 import '../../widgets/fade_in.dart';
 import '../../widgets/motion.dart';
@@ -118,6 +119,7 @@ class _LocalDeviceSetupScreenState extends State<LocalDeviceSetupScreen> {
                               ? '${esp32.lastUpdated!.hour.toString().padLeft(2, '0')}:${esp32.lastUpdated!.minute.toString().padLeft(2, '0')}:${esp32.lastUpdated!.second.toString().padLeft(2, '0')}'
                               : '—',
                         ),
+                        FirmwareBuildRow(tag: esp32.firmwareBuildTag),
                       ],
                     ),
                   ),
