@@ -32,4 +32,45 @@ void main() {
       expect(buildTagFromStatus({'build_tag': '   '}), isNull);
     });
   });
+
+  group('shouldRefreshFirmwareTag', () {
+    final now = DateTime(2026, 11, 23, 10, 0);
+
+    test('allows the first check', () {
+      expect(
+        shouldRefreshFirmwareTag(now: now, lastChecked: null, inFlight: false),
+        isTrue,
+      );
+    });
+
+    test('does not overlap two checks', () {
+      expect(
+        shouldRefreshFirmwareTag(
+          now: now,
+          lastChecked: now.subtract(const Duration(minutes: 5)),
+          inFlight: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('waits the full interval between checks', () {
+      expect(
+        shouldRefreshFirmwareTag(
+          now: now,
+          lastChecked: now.subtract(const Duration(seconds: 59)),
+          inFlight: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldRefreshFirmwareTag(
+          now: now,
+          lastChecked: now.subtract(const Duration(seconds: 60)),
+          inFlight: false,
+        ),
+        isTrue,
+      );
+    });
+  });
 }

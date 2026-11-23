@@ -3,6 +3,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
+import '../core/firmware_status.dart';
 import 'device_ap_client.dart';
 import 'offline_reading_store.dart';
 import 'offline_sync_service.dart';
@@ -74,6 +75,10 @@ class LocalEsp32Service extends ChangeNotifier {
   String? macAddress;     // retained for API compatibility; unused now
   DateTime? lastUpdated;
 
+  /// Build tag read from the device's `/api/status` while on its own WiFi.
+  /// Null until that endpoint answers, or forever on older firmware.
+  String? firmwareBuildTag;
+
   /// True while the values above came from the on-device cache rather
   /// than from a live reading. The UI labels them with their age so a
   /// remembered value is never mistaken for a current one.
@@ -114,6 +119,12 @@ class LocalEsp32Service extends ChangeNotifier {
   /// device's AP address — which is the ordinary case, every time this
   /// phone is on the tank's real WiFi.
   static const Duration _apProbeMaxGap = Duration(seconds: 15);
+
+  /// The build tag is static until a reflash. One read at first contact is
+  /// enough; the interval only makes a reflash visible without a restart.
+  static const Duration _firmwareTagRefreshInterval = Duration(seconds: 60);
+  DateTime? _firmwareTagCheckedAt;
+  bool _firmwareTagFetchInFlight = false;
 
   /// Retry the cloud after this many buffered readings — about once a
   /// minute at the poll interval above.
@@ -343,6 +354,36 @@ class LocalEsp32Service extends ChangeNotifier {
     }));
   }
 
+  /// Reads the device's build tag without holding up the live reading.
+  ///
+  /// A failed status request is ordinary — the firmware only serves it on
+  /// its own WiFi — so it leaves the previous tag alone and never changes
+  /// connection state.
+  void _refreshFirmwareBuildTag() {
+    final now = DateTime.now();
+    if (!shouldRefreshFirmwareTag(
+      now: now,
+      lastChecked: _firmwareTagCheckedAt,
+      inFlight: _firmwareTagFetchInFlight,
+      interval: _firmwareTagRefreshInterval,
+    )) {
+      return;
+    }
+
+    _firmwareTagCheckedAt = now;
+    _firmwareTagFetchInFlight = true;
+    unawaited(_ap.fetchStatus().then((status) {
+      _firmwareTagFetchInFlight = false;
+      if (_disposed || status == null) return;
+      final tag = buildTagFromStatus(status);
+      if (tag == null || tag == firmwareBuildTag) return;
+      firmwareBuildTag = tag;
+      notifyListeners();
+    }, onError: (_) {
+      _firmwareTagFetchInFlight = false;
+    }));
+  }
+
   /// Asks the device's access point for its current reading, buffers it,
   /// and paints it.
   ///
@@ -379,6 +420,10 @@ class LocalEsp32Service extends ChangeNotifier {
       // the same one the user needed to get onto the network.
       final apDeviceId = live['device_id'] as String?;
       if (_deviceId != null && apDeviceId != _deviceId) return;
+
+      // Only after the device id check: a stranger on 192.168.4.1 must
+      // never be asked for, or believed about, its firmware version.
+      _refreshFirmwareBuildTag();
 
       final row = Map<String, dynamic>.from(live);
       // The firmware sends no timestamp on purpose: offline it has no
