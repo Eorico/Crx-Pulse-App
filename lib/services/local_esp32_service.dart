@@ -126,6 +126,10 @@ class LocalEsp32Service extends ChangeNotifier {
   DateTime? _firmwareTagCheckedAt;
   bool _firmwareTagFetchInFlight = false;
 
+  /// Bumped on sign-out. A status request already in flight belongs to
+  /// the board we just left, so its answer must never paint the next one.
+  int _firmwareTagEpoch = 0;
+
   /// Retry the cloud after this many buffered readings — about once a
   /// minute at the poll interval above.
   ///
@@ -311,6 +315,10 @@ class LocalEsp32Service extends ChangeNotifier {
     _apMisses = 0;
     _bufferedSinceFlush = 0;
     _deviceId = null;
+    firmwareBuildTag = null;
+    _firmwareTagCheckedAt = null;
+    _firmwareTagFetchInFlight = false;
+    _firmwareTagEpoch++;
     _clearReadings();
     state = Esp32ConnectionState.connecting;
     notifyListeners();
@@ -360,6 +368,8 @@ class LocalEsp32Service extends ChangeNotifier {
   /// its own WiFi — so it leaves the previous tag alone and never changes
   /// connection state.
   void _refreshFirmwareBuildTag() {
+    if (_disposed) return;
+
     final now = DateTime.now();
     if (!shouldRefreshFirmwareTag(
       now: now,
@@ -370,16 +380,19 @@ class LocalEsp32Service extends ChangeNotifier {
       return;
     }
 
+    final epoch = _firmwareTagEpoch;
     _firmwareTagCheckedAt = now;
     _firmwareTagFetchInFlight = true;
     unawaited(_ap.fetchStatus().then((status) {
+      if (_disposed || epoch != _firmwareTagEpoch) return;
       _firmwareTagFetchInFlight = false;
-      if (_disposed || status == null) return;
+      if (status == null) return;
       final tag = buildTagFromStatus(status);
       if (tag == null || tag == firmwareBuildTag) return;
       firmwareBuildTag = tag;
       notifyListeners();
     }, onError: (_) {
+      if (_disposed || epoch != _firmwareTagEpoch) return;
       _firmwareTagFetchInFlight = false;
     }));
   }

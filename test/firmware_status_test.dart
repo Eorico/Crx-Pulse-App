@@ -38,7 +38,12 @@ void main() {
 
     test('allows the first check', () {
       expect(
-        shouldRefreshFirmwareTag(now: now, lastChecked: null, inFlight: false),
+        shouldRefreshFirmwareTag(
+          now: now,
+          lastChecked: null,
+          inFlight: false,
+          interval: const Duration(seconds: 60),
+        ),
         isTrue,
       );
     });
@@ -49,6 +54,7 @@ void main() {
           now: now,
           lastChecked: now.subtract(const Duration(minutes: 5)),
           inFlight: true,
+          interval: const Duration(seconds: 60),
         ),
         isFalse,
       );
@@ -60,6 +66,7 @@ void main() {
           now: now,
           lastChecked: now.subtract(const Duration(seconds: 59)),
           inFlight: false,
+          interval: const Duration(seconds: 60),
         ),
         isFalse,
       );
@@ -68,6 +75,7 @@ void main() {
           now: now,
           lastChecked: now.subtract(const Duration(seconds: 60)),
           inFlight: false,
+          interval: const Duration(seconds: 60),
         ),
         isTrue,
       );

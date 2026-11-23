@@ -18,7 +18,7 @@ bool shouldRefreshFirmwareTag({
   required DateTime now,
   required DateTime? lastChecked,
   required bool inFlight,
-  Duration interval = const Duration(seconds: 60),
+  required Duration interval,
 }) {
   if (inFlight) return false;
   if (lastChecked == null) return true;
