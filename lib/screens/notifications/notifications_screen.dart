@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../core/theme.dart';
 import '../../services/local_notification_provider.dart';
+import 'notification_detail_screen.dart';
 import '../../widgets/minimal_gif_header.dart';
 import '../../widgets/fade_in.dart';
 import '../../widgets/motion.dart';
@@ -23,6 +24,26 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<LocalNotificationProvider>().fetchNotifications();
     });
+  }
+
+  /// Opening an alert marks it read and shows its full detail page.
+  ///
+  /// Navigation is deliberately synchronous. Waiting on the database
+  /// write first meant a slow/contended SQLite write could swallow the
+  /// tap: the row repainted white (read) but no route was ever pushed.
+  void _openNotification(AppNotification notification) {
+    context.read<LocalNotificationProvider>().markAsRead(notification.id);
+
+    final opened = AppNotification(
+      id: notification.id,
+      message: notification.message,
+      severity: notification.severity,
+      createdAt: notification.createdAt,
+      read: true,
+    );
+
+    Navigator.of(context, rootNavigator: true).push(MaterialPageRoute(
+        builder: (_) => NotificationDetailScreen(notification: opened)));
   }
 
   @override
@@ -141,7 +162,7 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
                                   // the blue unread dot.
                                   notificationId: n.read ? null : n.id,
                                 ),
-                                onTap: () => provider.markAsRead(n.id),
+                                onTap: () => _openNotification(n),
                               ),
                             ),
                           ),

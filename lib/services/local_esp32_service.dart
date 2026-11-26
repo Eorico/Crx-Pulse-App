@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
 import '../core/firmware_status.dart';
+import '../core/ph_reading_filter.dart';
 import 'device_ap_client.dart';
 import 'offline_device_link.dart';
 import 'offline_reading_store.dart';
@@ -102,6 +103,7 @@ class LocalEsp32Service extends ChangeNotifier implements OfflineDeviceLink {
   final DeviceApClient _ap;
   final OfflineReadingStore _offline;
   final OfflineSyncService _sync;
+  final PhReadingFilter _phFilter = PhReadingFilter();
 
   /// Id reported by the board's own AP. Offline actions need the real
   /// DEVICE_ID in their body; the paired id from Supabase may not exist
@@ -221,6 +223,7 @@ class LocalEsp32Service extends ChangeNotifier implements OfflineDeviceLink {
       DateTime.now().difference(_lastCloudAt!).abs() <= _freshWindow;
 
   void _clearReadings() {
+    _phFilter.reset();
     ph = null;
     ammonia = null;
     turbidity = null;
@@ -261,6 +264,7 @@ class LocalEsp32Service extends ChangeNotifier implements OfflineDeviceLink {
     final age = DateTime.now().difference(cached.recordedAt).abs();
     if (age > _freshWindow) return;
 
+    _phFilter.seed(cached.ph);
     ph              = cached.ph;
     ammonia         = cached.ammonia;
     turbidity       = cached.turbidity;
@@ -614,7 +618,7 @@ class LocalEsp32Service extends ChangeNotifier implements OfflineDeviceLink {
     // A sensor the firmware flagged invalid is shown as "Not Connected".
     bool ok(String k) => d[k] is bool ? d[k] as bool : true;
 
-    ph              = ok('ph_valid') ? asNum('ph') : null;
+    ph              = ok('ph_valid') ? _phFilter.accept(asNum('ph')) : null;
     ammonia         = ok('ammonia_valid') ? asNum('ammonia') : null;
     turbidity       = ok('turbidity_valid') ? asNum('turbidity') : null;
     turbidityStatus = d['turbidity_status'] as String?;
