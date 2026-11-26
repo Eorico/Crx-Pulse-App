@@ -290,9 +290,9 @@ class FirmwareSpec {
   static const double phBufferNeutral = 6.86;
   static const double phBufferAcid = 4.01;
   static const double phBufferBase = 9.18;
-  static const double phVoltNeutral = 1.950;
-  static const double phVoltAcid = 2.447;
-  static const double phVoltBase = 1.425;
+  static const double phVoltNeutral = 3.715;
+  static const double phVoltAcid = 3.970;
+  static const double phVoltBase = 2.680;
   static bool phIsSafe(double ph) => ph >= phSafeMin && ph <= phSafeMax;
 
   static const double waterTempSafeMinC = 20.0;

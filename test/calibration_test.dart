@@ -132,9 +132,9 @@ void main() {
     });
 
     test('anchor voltages are the specified buffer voltages', () {
-      expect(FirmwareSpec.phVoltNeutral, closeTo(1.950, 1e-9));
-      expect(FirmwareSpec.phVoltAcid, closeTo(2.447, 1e-9));
-      expect(FirmwareSpec.phVoltBase, closeTo(1.425, 1e-9));
+      expect(FirmwareSpec.phVoltNeutral, closeTo(3.715, 1e-9));
+      expect(FirmwareSpec.phVoltAcid, closeTo(3.970, 1e-9));
+      expect(FirmwareSpec.phVoltBase, closeTo(2.680, 1e-9));
     });
 
     test('voltage falls as pH rises, so the ordering is sane', () {
