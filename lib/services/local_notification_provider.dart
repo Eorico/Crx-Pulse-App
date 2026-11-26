@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../core/firmware_spec.dart';
+import '../core/notification_type.dart';
 import 'local_db.dart';
 import 'local_esp32_service.dart';
 
@@ -11,6 +12,9 @@ class AppNotification {
   final bool read;
 
   const AppNotification({required this.id, required this.message, required this.severity, required this.createdAt, required this.read});
+
+  /// Sensor this alert belongs to, used to pick the detail-screen image.
+  NotificationType get type => NotificationType.fromMessage(message);
 
   factory AppNotification.fromMap(Map<String, dynamic> m) => AppNotification(
     id: m['id'] as int,
@@ -43,6 +47,13 @@ class LocalNotificationProvider extends ChangeNotifier {
   Future<void> markAllRead() async {
     final db = await LocalDb.instance.database;
     await db.update('notifications', {'read': 1});
+    await fetchNotifications();
+  }
+
+  /// Marks one alert as read when its detail page is opened.
+  Future<void> markAsRead(int id) async {
+    final db = await LocalDb.instance.database;
+    await db.update('notifications', {'read': 1}, where: 'id = ?', whereArgs: [id]);
     await fetchNotifications();
   }
 

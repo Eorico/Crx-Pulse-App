@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import '../../core/notification_type.dart';
 import '../../core/theme.dart';
 import '../../services/local_notification_provider.dart';
+import 'notification_detail_screen.dart';
 import '../../widgets/minimal_gif_header.dart';
 import '../../widgets/fade_in.dart';
 import '../../widgets/motion.dart';
@@ -22,6 +24,27 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<LocalNotificationProvider>().fetchNotifications();
     });
+  }
+
+  /// Opening an alert marks it read and shows its full detail page.
+  ///
+  /// Navigation is deliberately synchronous. Waiting on the database
+  /// write first meant a slow/contended SQLite write could swallow the
+  /// tap: the row repainted white (read) but no route was ever pushed.
+  void _openNotification(AppNotification notification) {
+    final provider = context.read<LocalNotificationProvider>();
+    provider.markAsRead(notification.id);
+
+    final opened = AppNotification(
+      id: notification.id,
+      message: notification.message,
+      severity: notification.severity,
+      createdAt: notification.createdAt,
+      read: true,
+    );
+
+    Navigator.of(context, rootNavigator: true).push(MaterialPageRoute(
+        builder: (_) => NotificationDetailScreen(notification: opened)));
   }
 
   @override
@@ -116,46 +139,74 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
                           child: FadeSlideIn(
                             delay: AppMotion.delayFor(i, max: 8),
                             from: const Offset(0.10, 0),
-                            child: AnimatedContainer(
-                              duration: AppMotion.normal,
-                              curve: AppMotion.smooth,
-                              margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: n.read
-                                    ? Colors.white
-                                    : AppColors.warning.withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(14),
-                                boxShadow: AppShadows.card,
-                              ),
-                              child: Row(
-                                children: [
-                                  // Unread alerts pulse; read ones sit still.
-                                  PulseHalo(
-                                    color: AppColors.warning,
-                                    active: !n.read,
-                                    maxRadius: 10,
-                                    child: const Icon(LucideIcons.alertTriangle,
-                                        color: AppColors.warning, size: 20),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(n.message,
+                            child: PressableScale(
+                              haptic: false,
+                              onTap: () => _openNotification(n),
+                              child: AnimatedContainer(
+                                duration: AppMotion.normal,
+                                curve: AppMotion.smooth,
+                                margin: const EdgeInsets.only(bottom: 10),
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: n.read
+                                      ? Colors.white
+                                      : AppColors.warning.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(14),
+                                  boxShadow: AppShadows.card,
+                                ),
+                                child: Row(
+                                  children: [
+                                    // Unread alerts pulse; read ones sit still.
+                                    // The sensor artwork makes the alert type
+                                    // obvious before the row is even opened.
+                                    PulseHalo(
+                                      color: AppColors.warning,
+                                      active: !n.read,
+                                      maxRadius: 10,
+                                      child: n.type == NotificationType.general
+                                          ? const Icon(LucideIcons.alertTriangle,
+                                              color: AppColors.warning, size: 20)
+                                          : Image.asset(n.type.imageAsset,
+                                              width: 24, height: 24),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(n.type.label,
+                                              style: const TextStyle(
+                                                  color: AppColors.primary,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w700)),
+                                          const SizedBox(height: 2),
+                                          Text(n.message,
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.w600, fontSize: 13)),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            '${n.createdAt.hour.toString().padLeft(2, '0')}:${n.createdAt.minute.toString().padLeft(2, '0')}',
                                             style: const TextStyle(
-                                                fontWeight: FontWeight.w600, fontSize: 13)),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${n.createdAt.hour.toString().padLeft(2, '0')}:${n.createdAt.minute.toString().padLeft(2, '0')}',
-                                          style: const TextStyle(
-                                              color: AppColors.textMuted, fontSize: 11),
-                                        ),
+                                                color: AppColors.textMuted, fontSize: 11),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text('Details',
+                                            style: TextStyle(
+                                                color: AppColors.primary,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700)),
+                                        SizedBox(width: 4),
+                                        Icon(LucideIcons.chevronRight,
+                                            color: AppColors.primary, size: 16),
                                       ],
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
                           ),
