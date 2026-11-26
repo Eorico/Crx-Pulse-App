@@ -14,7 +14,7 @@ int _oldAmmonia(double v) => v < FirmwareSpec.ammoniaSafeMax
     ? 0
     : (v < FirmwareSpec.ammoniaWarningMax ? 1 : 2);
 
-int _oldTurbidity(double v) => v < FirmwareSpec.turbidityClearMax
+int _oldTurbidity(double v) => v <= FirmwareSpec.turbidityClearMax
     ? 0
     : (v <= FirmwareSpec.turbiditySlightlyMax
         ? 1
@@ -46,7 +46,7 @@ void main() {
       FirmwareSpec.turbiditySlightlyMax,
       FirmwareSpec.turbidityTurbidMax,
     ],
-    strict: [true, false, false],
+    strict: [false, false, false],
   );
   const waterTemp = MetricBands(
     column: 'water_temp_c',
@@ -97,13 +97,15 @@ void main() {
       expect(ph.zoneOf(FirmwareSpec.phSafeMax + 0.01), 2);
     });
 
-    test('turbidity 19.94% is Slightly Turbid, not Clear', () {
-      // The standard reads "Clear: 0 -< 19.94%": the first cut is the
-      // BOTTOM of Slightly Turbid, not the top of Clear.
-      expect(turbidity.zoneOf(FirmwareSpec.turbidityClearMax), 1);
-      expect(turbidity.zoneOf(FirmwareSpec.turbidityClearMax - 0.01), 0);
+    test('turbidity 19.9% is Clear — every cut is the top of its band', () {
+      // 1.33015 V maps to 19.9 % and is still Clear, so the first cut is
+      // inclusive like the other two.
+      expect(turbidity.zoneOf(FirmwareSpec.turbidityClearMax), 0);
+      expect(turbidity.zoneOf(FirmwareSpec.turbidityClearMax + 0.01), 1);
       expect(turbidity.zoneOf(FirmwareSpec.turbiditySlightlyMax), 1);
+      expect(turbidity.zoneOf(FirmwareSpec.turbiditySlightlyMax + 0.01), 2);
       expect(turbidity.zoneOf(FirmwareSpec.turbidityTurbidMax), 2);
+      expect(turbidity.zoneOf(FirmwareSpec.turbidityTurbidMax + 0.01), 3);
       expect(turbidity.zoneOf(100), 3);
     });
 

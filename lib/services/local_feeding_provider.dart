@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/feeding_schedule.dart';
 import '../core/firmware_spec.dart';
+import 'offline_device_link.dart';
 
 /// A feeding schedule row in Supabase `schedules`. `grams` is one of the
 /// fixed dropdown values (5/10/15/20/25/30) the firmware has calibrated
@@ -42,9 +43,29 @@ class FeedingSchedule {
 /// the app just manages the list and queues one-shot "feed now" commands.
 class LocalFeedingProvider extends ChangeNotifier {
   final SupabaseClient _sb;
+  final OfflineDeviceLink? _deviceLink;
 
-  LocalFeedingProvider({SupabaseClient? client})
-      : _sb = client ?? Supabase.instance.client;
+  LocalFeedingProvider({SupabaseClient? client, OfflineDeviceLink? deviceLink})
+      : _sb = client ?? Supabase.instance.client,
+        _deviceLink = deviceLink;
+
+  /// True only after a reading has arrived over the board's own AP. The AP
+  /// keeps running even when the tank has internet, so connection state
+  /// alone cannot decide which transport to use.
+  bool get _offline => _deviceLink?.isOfflineDirect ?? false;
+
+  /// Device-side slots are keyed by their index in the board's cache. The
+  /// `ap-` prefix keeps them distinct from Supabase UUIDs in the UI.
+  static int? _apIndex(String id) =>
+      id.startsWith('ap-') ? int.tryParse(id.substring(3)) : null;
+
+  /// AP writes return false when the board rejects them. Without this the
+  /// caller reports success for a schedule that was never saved.
+  void _requireAck(bool acknowledged) {
+    if (!acknowledged) {
+      throw StateError('The device did not acknowledge the change.');
+    }
+  }
 
   List<FeedingSchedule> schedules = [];
   bool isLoading = false;
@@ -66,6 +87,27 @@ class LocalFeedingProvider extends ChangeNotifier {
   /// Named fetchSchedules() so the call site keeps working; it opens a
   /// live stream of this user's schedules.
   Future<void> fetchSchedules() async {
+    if (_offline) {
+      // A stream opened while online would keep overwriting the board's
+      // rows with Supabase data that the device cannot even read.
+      await _sub?.cancel();
+      _sub = null;
+      final rows = await _deviceLink!.readSchedules();
+      if (rows == null) return;
+      schedules = rows.map((r) => FeedingSchedule(
+            id: 'ap-${r['index']}',
+            time: (r['time'] as String?) ?? '00:00',
+            grams: (r['grams'] as num?)?.toInt() ?? 10,
+            rotatorPwm: (r['rotator_pwm'] as num?)?.toInt() ??
+                FirmwareSpec.rotatorDefaultPwm,
+            active: r['active'] as bool? ?? true,
+            feedDate: r['feed_date'] as String?,
+          )).toList();
+      isLoading = false;
+      notifyListeners();
+      return;
+    }
+
     final uid = _uid;
     if (uid == null) return;
     isLoading = true;
@@ -102,6 +144,12 @@ class LocalFeedingProvider extends ChangeNotifier {
     int grams, {
     int rotatorPwm = FirmwareSpec.rotatorDefaultPwm,
   }) async {
+    if (_offline) {
+      _requireAck(await _deviceLink!.addSchedule(
+          time: time, grams: grams, pwm: rotatorPwm));
+      await fetchSchedules();
+      return;
+    }
     final uid = _uid;
     if (uid == null) return;
     await _sb.from('schedules').insert({
@@ -116,6 +164,21 @@ class LocalFeedingProvider extends ChangeNotifier {
 
   /// Writes a batch of dated feeds, one `schedules` row per (date, time).
   Future<void> createSchedules(String deviceId, List<FeedingDraft> drafts) async {
+    if (_offline) {
+      try {
+        for (final draft in drafts) {
+          _requireAck(await _deviceLink!.addSchedule(
+            time: draft.time,
+            feedDate: draft.feedDate,
+            grams: draft.grams,
+            pwm: draft.rotatorPwm,
+          ));
+        }
+      } finally {
+        await fetchSchedules();
+      }
+      return;
+    }
     final uid = _uid;
     if (uid == null) return;
     final rows = feedingInsertRows(
@@ -135,6 +198,51 @@ class LocalFeedingProvider extends ChangeNotifier {
     List<FeedingSchedule> original,
     List<FeedingDraft> edited,
   ) async {
+    if (_offline) {
+      try {
+        final editedById = <String, FeedingDraft>{
+          for (final d in edited) if (d.id != null) d.id!: d,
+        };
+        // Overwrites first: they do not shift any index.
+        for (final saved in original) {
+          final draft = editedById[saved.id];
+          final index = _apIndex(saved.id);
+          if (draft == null || index == null) continue;
+          _requireAck(await _deviceLink!.addSchedule(
+            time: draft.time,
+            feedDate: date,
+            grams: draft.grams,
+            pwm: draft.rotatorPwm,
+            active: saved.active,
+            index: index,
+          ));
+        }
+        for (final draft in edited) {
+          if (draft.id != null) continue;
+          _requireAck(await _deviceLink!.addSchedule(
+            time: draft.time,
+            feedDate: date,
+            grams: draft.grams,
+            pwm: draft.rotatorPwm,
+          ));
+        }
+        // Removals last, highest index first, so lower indices stay put.
+        final removed = original
+            .where((s) => !editedById.containsKey(s.id))
+            .map((s) => _apIndex(s.id))
+            .whereType<int>()
+            .toList()
+          ..sort((a, b) => b.compareTo(a));
+        for (final index in removed) {
+          _requireAck(await _deviceLink!.removeSchedule(index));
+        }
+      } finally {
+        // Even a rejected batch leaves partial changes on the board; show
+        // what actually landed rather than the state we hoped to write.
+        await fetchSchedules();
+      }
+      return;
+    }
     final uid = _uid;
     if (uid == null) return;
     final plan = planGroupUpdate(
@@ -167,14 +275,48 @@ class LocalFeedingProvider extends ChangeNotifier {
   /// Deletes a whole date group (or any other set of schedule ids).
   Future<void> deleteSchedules(Set<String> ids) async {
     if (ids.isEmpty) return;
+    if (_offline) {
+      try {
+        final indices = ids.map(_apIndex).whereType<int>().toList()
+          ..sort((a, b) => b.compareTo(a));
+        for (final index in indices) {
+          _requireAck(await _deviceLink!.removeSchedule(index));
+        }
+      } finally {
+        await fetchSchedules();
+      }
+      return;
+    }
     await _sb.from('schedules').delete().inFilter('id', ids.toList());
   }
 
   Future<void> toggleSchedule(String id, bool active) async {
+    if (_offline) {
+      final index = _apIndex(id);
+      final saved = schedules.where((s) => s.id == id).firstOrNull;
+      if (index == null || saved == null) return;
+      _requireAck(await _deviceLink!.addSchedule(
+        time: saved.time,
+        feedDate: saved.feedDate,
+        grams: saved.grams,
+        pwm: saved.rotatorPwm,
+        active: active,
+        index: index,
+      ));
+      await fetchSchedules();
+      return;
+    }
     await _sb.from('schedules').update({'active': active}).eq('id', id);
   }
 
   Future<void> deleteSchedule(String id) async {
+    if (_offline) {
+      final index = _apIndex(id);
+      if (index == null) return;
+      _requireAck(await _deviceLink!.removeSchedule(index));
+      await fetchSchedules();
+      return;
+    }
     await _sb.from('schedules').delete().eq('id', id);
   }
 
@@ -186,6 +328,9 @@ class LocalFeedingProvider extends ChangeNotifier {
     int grams, {
     int rotatorPwm = FirmwareSpec.rotatorDefaultPwm,
   }) async {
+    if (_offline) {
+      return _deviceLink!.feed(grams, rotatorPwm);
+    }
     final uid = _uid;
     if (uid == null) return false;
     await _sb.from('commands').insert({

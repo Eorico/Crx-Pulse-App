@@ -46,6 +46,19 @@ class LocalNotificationProvider extends ChangeNotifier {
     await fetchNotifications();
   }
 
+  /// Marks one alert read. Used when a toast is tapped, so opening the
+  /// notification clears only the row the person actually looked at.
+  Future<void> markAsRead(int id) async {
+    final db = await LocalDb.instance.database;
+    await db.update(
+      'notifications',
+      {'read': 1},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    await fetchNotifications();
+  }
+
   /// Removes a single notification by ID - used by the swipe-to-
   /// delete gesture. Updates the in-memory list immediately (rather
   /// than waiting on a full fetchNotifications() round-trip) so the

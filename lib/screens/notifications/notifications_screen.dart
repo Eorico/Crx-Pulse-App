@@ -6,6 +6,7 @@ import '../../services/local_notification_provider.dart';
 import '../../widgets/minimal_gif_header.dart';
 import '../../widgets/fade_in.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/notification_card.dart';
 import '../../widgets/sticky_header_delegate.dart';
 
 class LocalNotificationsScreen extends StatefulWidget {
@@ -120,7 +121,6 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
                               duration: AppMotion.normal,
                               curve: AppMotion.smooth,
                               margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
                                 color: n.read
                                     ? Colors.white
@@ -128,34 +128,20 @@ class _LocalNotificationsScreenState extends State<LocalNotificationsScreen> {
                                 borderRadius: BorderRadius.circular(14),
                                 boxShadow: AppShadows.card,
                               ),
-                              child: Row(
-                                children: [
-                                  // Unread alerts pulse; read ones sit still.
-                                  PulseHalo(
-                                    color: AppColors.warning,
-                                    active: !n.read,
-                                    maxRadius: 10,
-                                    child: const Icon(LucideIcons.alertTriangle,
-                                        color: AppColors.warning, size: 20),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(n.message,
-                                            style: const TextStyle(
-                                                fontWeight: FontWeight.w600, fontSize: 13)),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${n.createdAt.hour.toString().padLeft(2, '0')}:${n.createdAt.minute.toString().padLeft(2, '0')}',
-                                          style: const TextStyle(
-                                              color: AppColors.textMuted, fontSize: 11),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
+                              child: NotificationCard(
+                                data: NotificationToastData(
+                                  title: n.severity == 'warning'
+                                      ? 'Warning'
+                                      : 'Alert',
+                                  message: n.message,
+                                  timestamp: n.createdAt,
+                                  icon: LucideIcons.alertTriangle,
+                                  accent: AppColors.warning,
+                                  // Read rows keep the card shape but lose
+                                  // the blue unread dot.
+                                  notificationId: n.read ? null : n.id,
+                                ),
+                                onTap: () => provider.markAsRead(n.id),
                               ),
                             ),
                           ),

@@ -134,10 +134,10 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
           _Zone('Turbid', Color(0xFFF59E0B)),
           _Zone('Highly', Color(0xFFEF4444)),
         ],
-        // The standard reads "Clear: 0 -< 19.94%", so 19.94 is already
-        // Slightly Turbid and that first cut is STRICT. The other two
-        // are the TOP of their band, so they stay inclusive. This
-        // matches TurbidityCalibration::statusOf in the firmware.
+        // Each cut is the TOP of its band: 1.33015 V maps to 19.9 % and
+        // is still Clear, 1.28065 V maps to 48.5 % and is still Slightly,
+        // and 1.22865 V maps to 78.6 % and is still Turbid. This matches
+        // TurbidityCalibration::statusOf in the firmware.
         bands: const MetricBands(
           column: 'turbidity',
           cuts: [
@@ -145,7 +145,7 @@ class _LocalAnalyticsScreenState extends State<LocalAnalyticsScreen> {
             FirmwareSpec.turbiditySlightlyMax,
             FirmwareSpec.turbidityTurbidMax,
           ],
-          strict: [true, false, false],
+          strict: [false, false, false],
         ),
       ),
       _MetricSpec(

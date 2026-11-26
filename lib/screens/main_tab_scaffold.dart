@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -10,8 +12,11 @@ import 'profile/profile_screen.dart';
 import 'settings/settings_screen.dart';
 import '../widgets/tab_nav.dart';
 import '../widgets/motion.dart';
+import '../widgets/notification_card.dart';
+import '../widgets/notification_toast.dart';
 import '../widgets/thermal_fan_widget.dart';
 import '../core/theme.dart';
+import '../services/device_provider.dart';
 import '../services/local_esp32_service.dart';
 import '../services/local_feeding_provider.dart';
 import '../services/local_notification_provider.dart';
@@ -46,7 +51,13 @@ class _MainTabScaffoldState extends State<MainTabScaffold> {
   late final PageController _pageController = PageController(initialPage: 0);
   final RealtimeSyncService _realtimeSync = RealtimeSyncService();
   Esp32ConnectionState? _lastEsp32State;
-  int _lastNotificationCount = 0;
+  bool? _lastOfflineDirect;
+
+  // A stored alert must not pop up just because the app opened. Suppress
+  // toasts until the first fetch has established the id baseline, and detect
+  // new rows by id rather than list length (SQLite caps the history at 100).
+  bool _notificationsReady = false;
+  int _maxNotificationId = 0;
 
   static const _screens = [
     LocalHomeScreen(),
@@ -81,11 +92,17 @@ class _MainTabScaffoldState extends State<MainTabScaffold> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // The fetch below already covers the current transport. Seed the
+      // transition tracker so the first update does not duplicate it.
+      _lastOfflineDirect = context.read<LocalEsp32Service>().isOfflineDirect;
       context.read<LocalFeedingProvider>().fetchSchedules();
       context.read<LocalNotificationProvider>().fetchNotifications().then((_) {
         if (!mounted) return;
-        _lastNotificationCount =
-            context.read<LocalNotificationProvider>().notifications.length;
+        final rows = context.read<LocalNotificationProvider>().notifications;
+        for (final row in rows) {
+          if (row.id > _maxNotificationId) _maxNotificationId = row.id;
+        }
+        _notificationsReady = true;
       });
       context.read<LocalEsp32Service>().addListener(_onEsp32Update);
       context.read<LocalNotificationProvider>().addListener(_onNotificationsUpdate);
@@ -95,45 +112,84 @@ class _MainTabScaffoldState extends State<MainTabScaffold> {
 
   void _onEsp32Update() {
     final esp32 = context.read<LocalEsp32Service>();
-    context.read<LocalFeedingProvider>().checkDueSchedules(esp32);
+    final feeding = context.read<LocalFeedingProvider>();
+
+    // The first AP reading arrives after this screen's initial fetch, and
+    // the Supabase stream is useless while offline. Reload schedules on
+    // both transitions so the list always matches the live transport.
+    if (_lastOfflineDirect != esp32.isOfflineDirect) {
+      _lastOfflineDirect = esp32.isOfflineDirect;
+      unawaited(feeding.fetchSchedules());
+    }
+    // An offline cold start has no paired id in Supabase. The board
+    // reported one in its validated reading, so let the UI use it for
+    // feeds, schedules and component tests. A paired id always wins.
+    if (esp32.isOfflineDirect && esp32.apDeviceId != null) {
+      context.read<DeviceProvider>().adoptOfflineDeviceId(esp32.apDeviceId!);
+    }
+
+    feeding.checkDueSchedules(esp32);
     context.read<LocalNotificationProvider>().checkThresholds(esp32);
     context.read<LocalAnalyticsProvider>().maybeLogReading(esp32);
     _realtimeSync.pushCurrentReading(esp32);
 
     if (_lastEsp32State != null && _lastEsp32State != esp32.state) {
       if (esp32.state == Esp32ConnectionState.unreachable) {
-        _showToast(esp32.errorMessage ?? "Can't reach the device.", isError: true);
+        _showToast(NotificationToastData(
+          title: 'Device connection',
+          message: esp32.errorMessage ?? "Can't reach the device.",
+          timestamp: DateTime.now(),
+          icon: LucideIcons.wifiOff,
+          accent: AppColors.danger,
+        ));
       } else if (esp32.state == Esp32ConnectionState.connected &&
           _lastEsp32State == Esp32ConnectionState.unreachable) {
-        _showToast('Reconnected to device',
-            isError: false, icon: LucideIcons.wifi);
+        _showToast(NotificationToastData(
+          title: 'Device connection',
+          message: 'Reconnected to device',
+          timestamp: DateTime.now(),
+          icon: LucideIcons.wifi,
+          accent: AppColors.success,
+        ));
       }
     }
     _lastEsp32State = esp32.state;
   }
 
   void _onNotificationsUpdate() {
-    final notifications = context.read<LocalNotificationProvider>().notifications;
-    if (notifications.length > _lastNotificationCount && notifications.isNotEmpty) {
-      _showToast(notifications.first.message,
-          isError: true, icon: LucideIcons.alertTriangle);
+    if (!_notificationsReady) return;
+    final provider = context.read<LocalNotificationProvider>();
+    final notifications = provider.notifications;
+    // Ordered newest first; anything above the baseline arrived since the
+    // app opened (or since the last toast), even when history is full.
+    final fresh = notifications.where((n) => n.id > _maxNotificationId).toList();
+    if (fresh.isEmpty) return;
+    for (final row in fresh) {
+      if (row.id > _maxNotificationId) _maxNotificationId = row.id;
     }
-    _lastNotificationCount = notifications.length;
+    final alert = fresh.first;
+    _showToast(
+        NotificationToastData(
+          title: 'CRX-Pulse alert',
+          message: alert.message,
+          timestamp: alert.createdAt,
+          icon: LucideIcons.alertTriangle,
+          accent: alert.severity == 'warning' ? AppColors.warning : AppColors.danger,
+          notificationId: alert.id,
+        ),
+        onTap: () {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          provider.markAsRead(alert.id);
+          _onTabTap(4);
+        },
+      );
   }
 
-  void _showToast(String message,
-      {required bool isError, IconData icon = LucideIcons.wifiOff}) {
+  void _showToast(NotificationToastData data, {VoidCallback? onTap}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(children: [
-          Icon(icon, color: isError ? AppColors.danger : AppColors.success, size: 18),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message)),
-        ]),
-        duration: const Duration(seconds: 3),
-      ),
+      buildTopNotificationSnackBar(context: context, data: data, onTap: onTap),
     );
   }
 

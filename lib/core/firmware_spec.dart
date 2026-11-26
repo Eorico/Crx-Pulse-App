@@ -84,28 +84,27 @@ class FirmwareSpec {
   static const double housingHotC = coolingMaxC;
 
   // ───────────────────────── turbidity ─────────────────────────
-  // V_CLEAR / V_HIGH and the three status thresholds. Note the
-  // inversion: a MORE turbid sample reads a LOWER voltage.
-  // ---- Calibration curve, revised 2026-11-08 ----
+  // Mirrors TurbidityCalibration in crx_pulse/turbidity_calibration.h.
+  // Voltage falls as turbidity rises:
   //
-  // Mirrors TurbidityCalibration in crx_pulse.ino exactly. Two anchors,
-  // measured against the tank rather than bench samples:
+  //   1.36460 V ->   0.0 %
+  //   1.33015 V ->  19.9 %   Clear
+  //   1.28065 V ->  48.5 %   Slightly Turbid
+  //   1.22865 V ->  78.6 %   Turbid
+  //   1.19160 V -> 100.0 %   Highly Turbid
   //
-  //   1.770 V ->   0 %   clear water
-  //   1.724 V -> 100 %   fully turbid
-  //
-  // The whole scale inside 46 mV. This supersedes the earlier
-  // five-level bench set (1.812 V down to 0.967 V), which put clear
-  // tank water at ~41 % "Slightly Turbid".
-  //
-  // Nothing in the app converts volts in the live path — the device
-  // sends the percentage. This is kept so calibration_test.dart can
-  // catch the app and the firmware drifting apart.
-  static const List<double> turbidityCurveVolts = [1.770, 1.724];
-  static const List<double> turbidityCurvePercent = [0.0, 100.0];
+  // Nothing in the live path converts volts — the device sends the
+  // percentage. This copy is pinned by calibration_test.dart so the
+  // app and the firmware cannot drift.
+  static const List<double> turbidityCurveVolts = [
+    1.36460, 1.33015, 1.28065, 1.22865, 1.19160
+  ];
+  static const List<double> turbidityCurvePercent = [
+    0.0, 19.9, 48.5, 78.6, 100.0
+  ];
 
-  static const double turbidityVClear = 1.770; // 0 %
-  static const double turbidityVHigh = 1.724; // 100 %
+  static const double turbidityVClear = 1.36460; // 0 %
+  static const double turbidityVHigh = 1.19160; // 100 %
 
   /// The firmware's own curve, so the app and the device agree on what
   /// a voltage means.
@@ -131,16 +130,16 @@ class FirmwareSpec {
   /// firmware now decides the band from the percentage too, so the two
   /// cannot drift apart the way they could when one was computed from
   /// volts and the other from percent.
-  static const double turbidityClearMax = 19.94;
-  static const double turbiditySlightlyMax = 48.53;
-  static const double turbidityTurbidMax = 78.58;
+  static const double turbidityClearMax = 19.9;
+  static const double turbiditySlightlyMax = 48.5;
+  static const double turbidityTurbidMax = 78.6;
 
   /// The firmware's four status words, from a percentage.
   ///
-  /// Clear is BELOW turbidityClearMax, not at-or-below: the standard
-  /// reads "Clear: 0 -< 19.94%", so 19.94 itself is Slightly Turbid.
+  /// Each cut is the TOP of its band, so equality stays in the band the
+  /// standard names: 19.9 is Clear, 48.5 is Slightly, 78.6 is Turbid.
   static String turbidityStatusOf(double percent) {
-    if (percent < turbidityClearMax) return 'Clear';
+    if (percent <= turbidityClearMax) return 'Clear';
     if (percent <= turbiditySlightlyMax) return 'Slightly Turbid';
     if (percent <= turbidityTurbidMax) return 'Turbid';
     return 'Highly Turbid';
@@ -286,16 +285,14 @@ class FirmwareSpec {
   // ---- The device's 3-point calibration, for reference ----
   //
   // The app never computes pH (the device sends it), but these record
-  // what the reading is anchored to, measured 2026-11-06. The buffers
-  // are 6.78 / 4.05 / 9.18, NOT 7.00 / 4.00 — the firmware's formula
-  // used to assume 7.00 and 4.00, which is why readings sat about a
-  // full unit high at neutral.
-  static const double phBufferNeutral = 6.78;
-  static const double phBufferAcid = 4.05;
-  static const double phBufferBase = 9.18; // standard quoted as 9.18-9.23
-  static const double phVoltNeutral = 1.7567;
-  static const double phVoltAcid = 2.3891;
-  static const double phVoltBase = 1.2754;
+  // the explicit standard buffers the firmware is anchored to. They are
+  // named 6.86 / 4.01 / 9.18, not 7.00 / 4.00 / 10.00.
+  static const double phBufferNeutral = 6.86;
+  static const double phBufferAcid = 4.01;
+  static const double phBufferBase = 9.18;
+  static const double phVoltNeutral = 1.950;
+  static const double phVoltAcid = 2.447;
+  static const double phVoltBase = 1.425;
   static bool phIsSafe(double ph) => ph >= phSafeMin && ph <= phSafeMax;
 
   static const double waterTempSafeMinC = 20.0;

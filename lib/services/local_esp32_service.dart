@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
 import '../core/firmware_status.dart';
 import 'device_ap_client.dart';
+import 'offline_device_link.dart';
 import 'offline_reading_store.dart';
 import 'offline_sync_service.dart';
 import 'reading_cache.dart';
@@ -46,7 +47,7 @@ enum ReadingSource { cloud, deviceAp }
 /// firmware's own CLOUD_READING_INTERVAL so the two stay in step.
 const Duration _freshWindow = FirmwareSpec.freshWindow;
 
-class LocalEsp32Service extends ChangeNotifier {
+class LocalEsp32Service extends ChangeNotifier implements OfflineDeviceLink {
   LocalEsp32Service({
     ReadingCache cache = const ReadingCache(),
     DeviceApClient apClient = const DeviceApClient(),
@@ -90,6 +91,7 @@ class LocalEsp32Service extends ChangeNotifier {
   /// Not the same as [isShowingCached]: these readings are live, taken
   /// seconds ago. What is missing is the cloud, so they exist only on
   /// this phone until [pendingUploadCount] drains.
+  @override
   bool isOfflineDirect = false;
 
   /// Readings captured off the device's own WiFi that have not reached
@@ -100,6 +102,57 @@ class LocalEsp32Service extends ChangeNotifier {
   final DeviceApClient _ap;
   final OfflineReadingStore _offline;
   final OfflineSyncService _sync;
+
+  /// Id reported by the board's own AP. Offline actions need the real
+  /// DEVICE_ID in their body; the paired id from Supabase may not exist
+  /// yet on a phone that has never been online.
+  String? apDeviceId;
+
+  String? get _actionDeviceId => apDeviceId ?? _deviceId;
+
+  // ---- Offline actions (OfflineDeviceLink) ---------------------------
+  //
+  // Thin forwards. The board checks the device id in every request body,
+  // so a stranger on 192.168.4.1 cannot drive the actuators even if the
+  // app is briefly pointed at one.
+
+  @override
+  Future<bool> seedClock(int epochSeconds) =>
+      _ap.postTime(epochSeconds, _actionDeviceId ?? '');
+
+  @override
+  Future<bool> feed(int grams, int pwm) =>
+      _ap.postFeed(_actionDeviceId ?? '', grams, pwm);
+
+  @override
+  Future<bool> command(String type, {int? grams, int? pwm, int? value}) =>
+      _ap.postCommand(_actionDeviceId ?? '', type,
+          grams: grams, pwm: pwm, value: value);
+
+  @override
+  Future<List<Map<String, dynamic>>?> readSchedules() =>
+      _ap.fetchSchedules();
+
+  @override
+  Future<bool> addSchedule({
+    required String time,
+    String? feedDate,
+    required int grams,
+    required int pwm,
+    bool active = true,
+    int? index,
+  }) =>
+      _ap.postSchedule(_actionDeviceId ?? '',
+          time: time,
+          feedDate: feedDate,
+          grams: grams,
+          pwm: pwm,
+          active: active,
+          index: index);
+
+  @override
+  Future<bool> removeSchedule(int index) =>
+      _ap.deleteSchedule(_actionDeviceId ?? '', index);
 
   StreamSubscription<List<Map<String, dynamic>>>? _sub;
   Timer? _staleTimer;
@@ -142,6 +195,12 @@ class LocalEsp32Service extends ChangeNotifier {
   Timer? _apTimer;
   StreamSubscription<List<ConnectivityResult>>? _conn;
   bool _apPollInFlight = false;
+
+  // The board has no battery-backed clock. Keep trying until the phone's
+  // seed is acknowledged; otherwise one dropped POST silently disables
+  // every dated feed until the app is restarted.
+  bool _clockSeedAcknowledged = false;
+  bool _clockSeedInFlight = false;
   DateTime? _nextApProbe;
   int _apMisses = 0;
   int _bufferedSinceFlush = 0;
@@ -172,6 +231,7 @@ class LocalEsp32Service extends ChangeNotifier {
     fanDutyPercent = 0;
     isShowingCached = false;
     isOfflineDirect = false;
+    _clockSeedAcknowledged = false;
   }
 
   /// Paint the last known reading before the network is touched.
@@ -315,6 +375,7 @@ class LocalEsp32Service extends ChangeNotifier {
     _apMisses = 0;
     _bufferedSinceFlush = 0;
     _deviceId = null;
+    apDeviceId = null;
     firmwareBuildTag = null;
     _firmwareTagCheckedAt = null;
     _firmwareTagFetchInFlight = false;
@@ -431,12 +492,29 @@ class LocalEsp32Service extends ChangeNotifier {
       // other; when the app has never been online it cannot know, and
       // the AP's WPA2 password is the only authentication available —
       // the same one the user needed to get onto the network.
-      final apDeviceId = live['device_id'] as String?;
-      if (_deviceId != null && apDeviceId != _deviceId) return;
+      final liveDeviceId = live['device_id'] as String?;
+      if (_deviceId != null && liveDeviceId != _deviceId) return;
+      if (apDeviceId != liveDeviceId) {
+        apDeviceId = liveDeviceId;
+        _clockSeedAcknowledged = false;   // a different board, a different clock
+      }
 
       // Only after the device id check: a stranger on 192.168.4.1 must
       // never be asked for, or believed about, its firmware version.
       _refreshFirmwareBuildTag();
+
+      // NTP needs internet, so an offline board has no clock. The phone is
+      // the only trustworthy clock in the room. Retry on later contacts
+      // while the seed is unacknowledged; never overlap two seed requests.
+      if (!_clockSeedAcknowledged && !_clockSeedInFlight) {
+        _clockSeedInFlight = true;
+        unawaited(seedClock(
+          DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+        ).then((ok) {
+          _clockSeedInFlight = false;
+          if (ok && !_disposed) _clockSeedAcknowledged = true;
+        }));
+      }
 
       final row = Map<String, dynamic>.from(live);
       // The firmware sends no timestamp on purpose: offline it has no

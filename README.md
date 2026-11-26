@@ -23,9 +23,11 @@ is what protects the data.
 
 > **Re-run `supabase/supabase_schema.sql` before running this build.** It
 > adds the `device_logs` table and the `commands.value`,
-> `commands.rotator_pwm` and `schedules.rotator_pwm` columns that Test
-> Components and the rotator-speed selector need. The script is
-> idempotent, so running it again on an existing project is safe.
+> `commands.rotator_pwm`, `schedules.rotator_pwm` and `schedules.feed_date`
+> columns that Test Components, the rotator-speed selector and dated
+> feeding need. The script is idempotent, so running it again on an
+> existing project is safe. If you only need the dated-feeding column,
+> run `supabase/migrations/2026-11-24-add-schedules-feed-date.sql` instead.
 
 ## Layout
 
@@ -35,7 +37,7 @@ is what protects the data.
 | `lib/core/fan_speed_util.dart` | The firmware's cooling ramp, for when real fan telemetry has not arrived yet. |
 | `lib/core/theme.dart` | Palette, Claymorphism shadow tokens, radii, `ThemeData`. |
 | `lib/widgets/motion.dart` | **The motion system.** Durations, curves, and the reusable animations every screen uses. |
-| `lib/services/` | Supabase-backed providers (live readings, device pairing, feeding, auth, device log, component tests) plus the local SQLite history. |
+| `lib/services/` | Supabase-backed providers (live readings, device pairing, feeding, auth, device log, component tests) plus the local SQLite history. `device_ap_client.dart` talks to the board's own WiFi when there is no internet; `offline_device_link.dart` is the interface the providers use for it. |
 | `lib/screens/` | One folder per tab, plus `auth/` and `splash/`. |
 
 ## Test Components (Settings tab)
@@ -61,12 +63,37 @@ Volume is managed rather than unbounded:
 `device_logs` is the one table that grows without bound — see the
 retention notes at the bottom of `supabase/supabase_schema.sql`.
 
-The servo and motor controls queue `commands` rows like everything else,
-so the device acts on them at its next poll (~5 s) rather than instantly.
+Online, the servo and motor controls queue `commands` rows like everything
+else, so the device acts on them at its next poll (~5 s) rather than
+instantly. Offline they go straight to the board's AP (see below).
 Both actuators are bounded **by the firmware**: a test-opened door
 force-closes after 10 s and a test-driven motor stops after 30 s. That is
 deliberate — an open feeder door keeps dropping feed, and neither should
 keep running because somebody closed the app.
+
+## Offline control (no WiFi, no internet)
+
+When the tank cannot reach the router, the ESP32 raises its own
+`CRX-Pulse-XXXXXX` access point. Join it with the phone and the app keeps
+working:
+
+- Live readings come from `/api/live` and are buffered locally for upload
+  when the internet returns (this was already the case).
+- Manual feeds, servo/motor tests and schedule edits go straight to the AP
+  instead of becoming Supabase rows the device could never poll.
+- The phone seeds the board's UTC clock on first contact and retries until
+  the board acknowledges it. Without it an offline board has no trustworthy
+  date, so dated feeds could not fire.
+- Schedules are read from and written to the board's own `Preferences`
+  cache, which survives a reboot with no WiFi.
+
+The transport switches only after a validated reading has arrived over the
+AP (`isOfflineDirect`), so a home router that happens to use `192.168.4.1`
+is never sent a feed command. Online behaviour is unchanged.
+
+The ESP32 has no battery-backed clock: after a power cut with no router,
+someone must join its AP once to seed the time before **dated** feeds fire.
+Every-day schedules need no clock.
 
 ## Keeping the app and the firmware in step
 

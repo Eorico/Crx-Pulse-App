@@ -49,7 +49,14 @@ class CrxPulseApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => LocalEsp32Service()),
         ChangeNotifierProvider(create: (_) => FloatingWidgetPositionProvider()),
-        ChangeNotifierProvider(create: (_) => LocalFeedingProvider()),
+        // The device link is the same instance the dashboard polls. Reading
+        // it here (rather than subscribing) keeps these providers alive
+        // across the many notifyListeners() calls a live reading causes.
+        ChangeNotifierProvider(
+          create: (context) => LocalFeedingProvider(
+            deviceLink: context.read<LocalEsp32Service>(),
+          ),
+        ),
         ChangeNotifierProvider(create: (_) => LocalNotificationProvider()),
         ChangeNotifierProvider(create: (_) => LocalAnalyticsProvider()),
         ChangeNotifierProvider(create: (_) => DeviceProvider()),
@@ -58,7 +65,11 @@ class CrxPulseApp extends StatelessWidget {
         // between tabs, and Settings' dispose() reads it to switch
         // verbose streaming off.
         ChangeNotifierProvider(create: (_) => DeviceLogProvider()),
-        ChangeNotifierProvider(create: (_) => DeviceTestProvider()),
+        ChangeNotifierProvider(
+          create: (context) => DeviceTestProvider(
+            deviceLink: context.read<LocalEsp32Service>(),
+          ),
+        ),
       ],
       child: MaterialApp(
         title: 'CRX-Pulse',

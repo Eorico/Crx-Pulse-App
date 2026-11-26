@@ -10,8 +10,14 @@ import 'package:http/http.dart' as http;
 /// serves two routes on 192.168.4.1 — the SoftAP gateway address, which
 /// is fixed by the ESP-IDF default and so needs no discovery:
 ///
-///   GET /api/live    the current reading, in `readings` column names
-///   GET /api/status  device id, firmware, uptime, client count
+///   GET /api/live        the current reading, in `readings` column names
+///   GET /api/status      device id, firmware, uptime, client count
+///   GET /api/schedules   the board's cached feeds (offline control)
+///
+/// The same AP also accepts POSTs for the clock, manual feeds, component
+/// tests and schedule edits. They are only ever called after a validated
+/// reading has arrived over this link, so a router that happens to use
+/// 192.168.4.1 never gets asked to open the feeder.
 ///
 /// Everything here fails quietly. On the tank's normal WiFi there is no
 /// 192.168.4.1 to answer, and that is not an error — it is the ordinary
@@ -44,6 +50,101 @@ class DeviceApClient {
   /// 192.168.4.1.
   Future<Map<String, dynamic>?> fetchStatus() =>
       _getJson('/api/status', _isStatus);
+
+  /// The feeds cached on the board. Null means the AP did not answer, which
+  /// is the ordinary case away from the device's own WiFi.
+  Future<List<Map<String, dynamic>>?> fetchSchedules() async {
+    final client = _clientFactory?.call() ?? http.Client();
+    try {
+      final res = await client
+          .get(Uri.parse('$baseUrl/api/schedules'))
+          .timeout(timeout);
+      if (res.statusCode != 200) return null;
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, dynamic>) return null;
+      final rows = decoded['schedules'];
+      if (rows is! List) return null;
+      return rows
+          .whereType<Map<String, dynamic>>()
+          .where(_hasDeviceId)
+          .toList();
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Seeds the board's clock. The phone's UTC epoch is the only trustworthy
+  /// time available while the tank is offline.
+  Future<bool> postTime(int epochSeconds, String deviceId) => _postJson(
+      '/api/time', {'device_id': deviceId, 'epoch_seconds': epochSeconds});
+
+  /// Feeds now, without queuing a row in Supabase.
+  Future<bool> postFeed(String deviceId, int grams, int pwm) => _postJson(
+      '/api/feed',
+      {'device_id': deviceId, 'grams': grams, 'rotator_pwm': pwm});
+
+  /// Drives one actuator directly, for the Test Components screen.
+  Future<bool> postCommand(String deviceId, String type,
+          {int? grams, int? pwm, int? value}) =>
+      _postJson('/api/command', {
+        'device_id': deviceId,
+        'type': type,
+        if (grams != null) 'grams': grams,
+        if (pwm != null) 'rotator_pwm': pwm,
+        if (value != null) 'value': value,
+      });
+
+  /// Adds a schedule slot, or overwrites [index] when supplied.
+  Future<bool> postSchedule(
+    String deviceId, {
+    required String time,
+    String? feedDate,
+    required int grams,
+    required int pwm,
+    bool active = true,
+    int? index,
+  }) =>
+      _postJson('/api/schedules', {
+        'device_id': deviceId,
+        'time': time,
+        // A null date means "every day" on the board. Sending JSON null
+        // would make ArduinoJson treat it as a missing key, but omitting it
+        // is unambiguous on every firmware version.
+        if (feedDate != null) 'feed_date': feedDate,
+        'grams': grams,
+        'rotator_pwm': pwm,
+        'active': active,
+        if (index != null) 'index': index,
+      });
+
+  Future<bool> deleteSchedule(String deviceId, int index) => _postJson(
+      '/api/schedules/delete', {'device_id': deviceId, 'index': index});
+
+  /// True only when the board acknowledged the write as itself. A stranger's
+  /// web server answering 200 with a generic body is not an action done.
+  Future<bool> _postJson(String path, Map<String, dynamic> body) async {
+    final client = _clientFactory?.call() ?? http.Client();
+    try {
+      final res = await client
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(timeout);
+      if (res.statusCode != 200) return false;
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map<String, dynamic>) return false;
+      return decoded['ok'] == true &&
+          decoded['device_id'] == body['device_id'];
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
 
   Future<Map<String, dynamic>?> _getJson(
       String path, bool Function(Map<String, dynamic>) looksRight) async {

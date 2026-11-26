@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
 import '../core/supabase_diagnosis.dart';
+import 'offline_device_link.dart';
 
 /// Drives the feeder servo and the DC rotator directly, for the Test
 /// Components screen.
@@ -19,6 +20,10 @@ import '../core/supabase_diagnosis.dart';
 /// because somebody closed the app.
 class DeviceTestProvider extends ChangeNotifier {
   final SupabaseClient _sb = Supabase.instance.client;
+  final OfflineDeviceLink? _deviceLink;
+
+  DeviceTestProvider({OfflineDeviceLink? deviceLink})
+      : _deviceLink = deviceLink;
 
   /// The last command sent, for the UI to echo back.
   String? lastAction;
@@ -67,6 +72,32 @@ class DeviceTestProvider extends ChangeNotifier {
 
   Future<bool> _send(String deviceId, String type,
       {int? value, required String label}) async {
+    // While the only link is the board's own AP, a `commands` row would
+    // never be picked up: the firmware only polls Supabase when it has a
+    // route out. Send straight to the AP instead.
+    if (_deviceLink?.isOfflineDirect == true) {
+      sending = true;
+      diagnosis = null;
+      notifyListeners();
+      try {
+        final ok = await _deviceLink!.command(type, value: value);
+        if (ok) {
+          lastAction = label;
+        } else {
+          diagnosis = const SupabaseDiagnosis(
+            fault: SupabaseFault.unknown,
+            summary: 'The device did not acknowledge the command.',
+            fix: 'Stay within range of the device WiFi and try again.',
+            detail: 'POST /api/command failed',
+          );
+        }
+        return ok;
+      } finally {
+        sending = false;
+        notifyListeners();
+      }
+    }
+
     final uid = _sb.auth.currentUser?.id;
     if (uid == null) {
       diagnosis = const SupabaseDiagnosis(

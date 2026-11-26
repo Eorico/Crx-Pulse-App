@@ -19,10 +19,11 @@ class MetricBands {
   ///
   /// The bands genuinely mix the two, so this cannot be one global
   /// rule. pH 6.5 is the BOTTOM of safe, so 6.5 belongs to Optimal and
-  /// the cut is strict. Turbidity's 19.9% is the TOP of Clear, so 19.9
-  /// belongs to Clear and the cut is inclusive. Values land exactly on
-  /// these boundaries often — the firmware reports 1–2 decimals — so
-  /// getting it uniform would visibly misfile readings.
+  /// the cut is strict. All three turbidity cuts are the TOP of their
+  /// band, so 19.9 / 48.5 / 78.6 stay in Clear / Slightly / Turbid and
+  /// those cuts are inclusive. Values land exactly on these boundaries
+  /// often — the firmware reports 1–2 decimals — so getting it uniform
+  /// would visibly misfile readings.
   final List<bool> strict;
 
   const MetricBands({

@@ -17,6 +17,17 @@ class DeviceProvider extends ChangeNotifier {
 
   bool get hasDevice => deviceId != null;
 
+  /// On an offline cold start Supabase cannot pair the board, but the
+  /// validated AP reading already told us its id. Fill it in so the feed,
+  /// schedule and component-test controls stay usable. A paired id always
+  /// wins — this only fills the gap when there is nothing else to use.
+  void adoptOfflineDeviceId(String id) {
+    if (deviceId != null) return;
+    deviceId = id;
+    deviceName ??= id;
+    notifyListeners();
+  }
+
   /// Live-watch the user's device rows (RLS limits this to their own).
   void start() {
     final uid = _sb.auth.currentUser?.id;
