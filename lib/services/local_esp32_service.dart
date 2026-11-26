@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/firmware_spec.dart';
 import '../core/firmware_status.dart';
+import '../core/ph_reading_filter.dart';
 import 'device_ap_client.dart';
 import 'offline_reading_store.dart';
 import 'offline_sync_service.dart';
@@ -64,6 +65,7 @@ class LocalEsp32Service extends ChangeNotifier {
 
   // Six readings the app displays.
   double? ph;
+  final PhReadingFilter _phFilter = PhReadingFilter();
   double? ammonia;        // mg/L estimate
   double? turbidity;      // percent (0 = clear, 100 = highly turbid)
   String? turbidityStatus;
@@ -162,6 +164,7 @@ class LocalEsp32Service extends ChangeNotifier {
       DateTime.now().difference(_lastCloudAt!).abs() <= _freshWindow;
 
   void _clearReadings() {
+    _phFilter.reset();
     ph = null;
     ammonia = null;
     turbidity = null;
@@ -201,6 +204,7 @@ class LocalEsp32Service extends ChangeNotifier {
     final age = DateTime.now().difference(cached.recordedAt).abs();
     if (age > _freshWindow) return;
 
+    _phFilter.seed(cached.ph);
     ph              = cached.ph;
     ammonia         = cached.ammonia;
     turbidity       = cached.turbidity;
@@ -536,7 +540,8 @@ class LocalEsp32Service extends ChangeNotifier {
     // A sensor the firmware flagged invalid is shown as "Not Connected".
     bool ok(String k) => d[k] is bool ? d[k] as bool : true;
 
-    ph              = ok('ph_valid') ? asNum('ph') : null;
+    final rawPh = ok('ph_valid') ? asNum('ph') : null;
+    ph              = _phFilter.accept(rawPh);
     ammonia         = ok('ammonia_valid') ? asNum('ammonia') : null;
     turbidity       = ok('turbidity_valid') ? asNum('turbidity') : null;
     turbidityStatus = d['turbidity_status'] as String?;
